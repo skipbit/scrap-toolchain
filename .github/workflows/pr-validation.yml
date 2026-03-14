@@ -7,6 +7,7 @@ on:
       - 'schema/**'
       - 'scripts/**'
       - 'platforms.toml'
+      - '.github/workflows/pr-validation.yml'
 
 permissions:
   contents: read
@@ -29,8 +30,11 @@ jobs:
 
       - name: Detect changed molds
         id: detect
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.sha }}
         run: |
-          CHANGED_FILES=$(git diff --name-only "${{ github.event.pull_request.base.sha }}" "${{ github.sha }}")
+          CHANGED_FILES=$(git diff --name-only "${BASE_SHA}" "${HEAD_SHA}")
 
           # Check if infrastructure files changed (schema, scripts, platforms.toml)
           INFRA_CHANGED=$(echo "$CHANGED_FILES" | grep -E '^(schema/|scripts/|platforms\.toml)' || true)
@@ -78,9 +82,11 @@ jobs:
       - uses: actions/checkout@v4
 
       - name: Validate mold path format
+        env:
+          MOLD: ${{ matrix.mold }}
         run: |
-          if ! echo "${{ matrix.mold }}" | grep -qE '^molds/[a-z][a-z0-9-]*/[0-9a-zA-Z]'; then
-            echo "::error::Invalid mold path format: ${{ matrix.mold }}"
+          if ! echo "$MOLD" | grep -qE '^molds/[a-z][a-z0-9-]*/[0-9a-zA-Z]'; then
+            echo "::error::Invalid mold path format: ${MOLD}"
             exit 1
           fi
 
@@ -94,17 +100,22 @@ jobs:
 
       - name: Validate mold definition
         id: validate
+        env:
+          MOLD: ${{ matrix.mold }}
         run: |
           chmod +x scripts/validate-mold.sh
-          scripts/validate-mold.sh "${{ matrix.mold }}"
+          scripts/validate-mold.sh "$MOLD"
 
       - name: Determine source type
         if: success()
         id: source-type
+        env:
+          MOLD: ${{ matrix.mold }}
         run: |
           SOURCE_TYPE=$(python3 -c "
-          import tomllib
-          with open('${{ matrix.mold }}/mold.toml', 'rb') as f:
+          import tomllib, os
+          mold = os.environ['MOLD']
+          with open(f'{mold}/mold.toml', 'rb') as f:
               data = tomllib.load(f)
           print(data['source']['type'])
           ")
@@ -117,11 +128,12 @@ jobs:
       - name: Light Build Verification (fetch)
         if: success() && steps.source-type.outputs.type == 'fetch'
         env:
+          MOLD: ${{ matrix.mold }}
           OUTPUT_DIR: ${{ runner.temp }}/lbv-output
         run: |
           chmod +x scripts/cast-ingot.sh scripts/smoke-test.sh
           mkdir -p "${OUTPUT_DIR}"
-          scripts/cast-ingot.sh "${{ matrix.mold }}" linux x86_64
+          scripts/cast-ingot.sh "$MOLD" linux x86_64
 
       # Light Build Verification (build type):
       # Downloads source, verifies SHA256, extracts, installs prerequisites,
@@ -134,6 +146,7 @@ jobs:
         run: |
           MOLD_JSON=$(mktemp)
           export MOLD_JSON
+          trap 'rm -f "${MOLD_JSON}"' EXIT
 
           python3 << 'PYEOF'
           import tomllib, json, os
@@ -157,7 +170,7 @@ jobs:
 
           # Download source archive
           WORK_DIR=$(mktemp -d)
-          trap 'rm -rf "${WORK_DIR}"' EXIT
+          trap 'rm -rf "${WORK_DIR}"; rm -f "${MOLD_JSON}"' EXIT
 
           echo "Downloading source archive..."
           curl -fSL --max-time 600 --retry 3 -o "${WORK_DIR}/source.tar" "${SOURCE_URL}"
@@ -204,11 +217,11 @@ jobs:
         continue-on-error: true
         env:
           GH_TOKEN: ${{ github.token }}
+          MOLD: ${{ matrix.mold }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         run: |
-          MOLD="${{ matrix.mold }}"
-          RUN_URL="${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
-
-          gh pr comment "${{ github.event.pull_request.number }}" \
+          gh pr comment "${PR_NUMBER}" \
             --body "## Validation Failed: \`${MOLD}\`
 
           The PR validation for \`${MOLD}\` has failed.
