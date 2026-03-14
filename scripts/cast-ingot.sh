@@ -163,9 +163,9 @@ echo ""
 # --- Step 2: Find binary entry for platform/arch ---
 echo -e "${BOLD}2. Find binary entry for ${PLATFORM}-${ARCH}${RESET}"
 
-BINARY_ENTRY=$(jq --arg p "$PLATFORM" --arg a "$ARCH" \
-    '.source.binaries[] | select(.platform == $p and .arch == $a)' \
-    "$MOLD_JSON" 2>/dev/null | head -1)
+BINARY_ENTRY=$(jq -c --arg p "$PLATFORM" --arg a "$ARCH" \
+    '[.source.binaries[] | select(.platform == $p and .arch == $a)] | first // empty' \
+    "$MOLD_JSON" 2>/dev/null)
 
 if [[ -z "$BINARY_ENTRY" ]]; then
     BF_ENABLED=$(jq -r '.source.build_fallback.enabled // false' "$MOLD_JSON")
@@ -266,7 +266,21 @@ esac
 # Apply root_dir if specified
 CONTENT_DIR="$EXTRACT_DIR"
 if [[ -n "$ROOT_DIR" ]]; then
+    # Reject path traversal in root_dir
+    if [[ "$ROOT_DIR" == /* || "$ROOT_DIR" == ../* || \
+          "$ROOT_DIR" == */../* || "$ROOT_DIR" == */.. || \
+          "$ROOT_DIR" == .. ]]; then
+        fail "root_dir contains traversal or is absolute: ${ROOT_DIR}"
+        exit 2
+    fi
     if [[ -d "${EXTRACT_DIR}/${ROOT_DIR}" ]]; then
+        # Verify canonical path is within the extraction directory
+        ROOT_REAL=$(resolve_path "${EXTRACT_DIR}/${ROOT_DIR}")
+        EXTRACT_REAL=$(resolve_path "$EXTRACT_DIR")
+        if [[ "$ROOT_REAL" != "${EXTRACT_REAL}"* ]]; then
+            fail "root_dir resolves outside extraction directory: ${ROOT_DIR}"
+            exit 2
+        fi
         CONTENT_DIR="${EXTRACT_DIR}/${ROOT_DIR}"
     else
         fail "root_dir '${ROOT_DIR}' not found after extraction"
@@ -362,6 +376,14 @@ fi
 
 for idx in $(seq 0 $((LICENSE_COUNT - 1))); do
     LIC_FILE=$(jq -r ".metadata.license_files[$idx]" "$MOLD_JSON")
+
+    # Reject path traversal in license file names
+    if [[ "$LIC_FILE" == /* || "$LIC_FILE" == ../* || \
+          "$LIC_FILE" == */../* || "$LIC_FILE" == */.. || \
+          "$LIC_FILE" == .. ]]; then
+        fail "License file path contains traversal or is absolute: ${LIC_FILE}"
+        exit 2
+    fi
 
     if [[ -f "${STAGING_DIR}/${LIC_FILE}" ]]; then
         pass "License file present: ${LIC_FILE}"

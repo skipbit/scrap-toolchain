@@ -103,7 +103,7 @@ api_call() {
     local attempt
     for attempt in $(seq 1 "$MAX_API_RETRIES"); do
         local response http_code body
-        response=$(curl -s -w "\n%{http_code}" \
+        response=$(curl -s --max-time 30 -w "\n%{http_code}" \
             -H "Authorization: token ${GITHUB_TOKEN}" \
             -H "Accept: application/vnd.github+json" \
             "https://api.github.com/${endpoint}" 2>/dev/null) || true
@@ -197,6 +197,10 @@ collect_ingots() {
                 fi
 
                 # Build ingot entry with download URL
+                if [[ -z "$GITHUB_REPOSITORY" ]]; then
+                    warn "GITHUB_REPOSITORY not set; cannot build download URL for $(basename "$meta_file")"
+                    continue
+                fi
                 local ingot_url
                 ingot_url="https://github.com/${GITHUB_REPOSITORY}/releases/download/${release_tag}/$(echo "$meta" | jq -r '.ingot_file')"
                 local ingot_entry
@@ -220,7 +224,8 @@ collect_ingots() {
             local asset_names
             asset_names=$(echo "$release_data" | jq -r '.assets[].name' 2>/dev/null) || true
 
-            for asset_name in $asset_names; do
+            while IFS= read -r asset_name; do
+                [[ -n "$asset_name" ]] || continue
                 local platform="" arch=""
                 case "$asset_name" in
                     "${family}-${version}-linux-x86_64.tar.xz")
@@ -260,7 +265,7 @@ collect_ingots() {
                 # (not available from API fallback; omitted)
 
                 ingots=$(echo "$ingots" | jq --argjson entry "$entry" '. + [$entry]')
-            done
+            done <<< "$asset_names"
         fi
     fi
 
@@ -491,8 +496,8 @@ for tc in toolchains:
 print('\n'.join(lines) + '\n')
 " > "${TMPDIR_INDEX}/index.toml"
 
-# Atomic write: move temp file to final location
-cp "${TMPDIR_INDEX}/index.toml" "$INDEX_FILE"
+# Move temp file to final location
+mv "${TMPDIR_INDEX}/index.toml" "$INDEX_FILE"
 
 pass "Generated ${INDEX_FILE}"
 info "Toolchains: ${MOLD_PROCESSED}, Skipped (disabled): ${MOLD_SKIPPED}, Errors: ${MOLD_ERRORS}"
