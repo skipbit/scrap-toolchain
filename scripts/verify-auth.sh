@@ -77,15 +77,23 @@ echo ""
 echo -e "${BOLD}2. Branch protection for '$PROTECTED_BRANCH'${RESET}"
 
 BRANCH_PROTECTED=false
-BP_JSON=$(gh api "repos/$REPO/branches/$PROTECTED_BRANCH/protection" 2>/dev/null || echo "")
 
-if [[ -n "$BP_JSON" ]]; then
-    # Legacy branch protection API returned data
+# Try legacy branch protection API first (check HTTP status to distinguish 404)
+if gh api "repos/$REPO/branches/$PROTECTED_BRANCH/protection" --silent 2>/dev/null; then
+    BP_LEGACY=true
+else
+    BP_LEGACY=false
+fi
+
+if [[ "$BP_LEGACY" == "true" ]]; then
+    # Legacy branch protection is configured
     BRANCH_PROTECTED=true
     pass "Branch protection is enabled for '$PROTECTED_BRANCH' (legacy rules)"
 
+    BP_JSON=$(gh api "repos/$REPO/branches/$PROTECTED_BRANCH/protection" 2>/dev/null || echo "")
+
     # Check require PR reviews
-    REQUIRE_PR=$(echo "$BP_JSON" | gh api --input - --jq '.required_pull_request_reviews // empty' 2>/dev/null || echo "")
+    REQUIRE_PR=$(echo "$BP_JSON" | jq '.required_pull_request_reviews // empty' 2>/dev/null || echo "")
     if [[ -n "$REQUIRE_PR" ]]; then
         pass "Pull request reviews are required"
     else
@@ -93,7 +101,7 @@ if [[ -n "$BP_JSON" ]]; then
     fi
 
     # Check require status checks
-    STATUS_CHECKS=$(echo "$BP_JSON" | gh api --input - --jq '.required_status_checks // empty' 2>/dev/null || echo "")
+    STATUS_CHECKS=$(echo "$BP_JSON" | jq '.required_status_checks // empty' 2>/dev/null || echo "")
     if [[ -n "$STATUS_CHECKS" ]]; then
         pass "Status checks are required"
     else
@@ -102,11 +110,11 @@ if [[ -n "$BP_JSON" ]]; then
 else
     # Legacy API returned 404 — try Rulesets API (GitHub repository rules)
     RULESETS_JSON=$(gh api "repos/$REPO/rulesets" 2>/dev/null || echo "[]")
-    RULESET_COUNT=$(echo "$RULESETS_JSON" | gh api --input - --jq 'length' 2>/dev/null || echo "0")
+    RULESET_COUNT=$(echo "$RULESETS_JSON" | jq 'length' 2>/dev/null || echo "0")
 
     if [[ "$RULESET_COUNT" -gt 0 ]]; then
         # Find active rulesets targeting the protected branch
-        ACTIVE_IDS=$(echo "$RULESETS_JSON" | gh api --input - --jq '[.[] | select(.enforcement == "active") | .id] | .[]' 2>/dev/null || echo "")
+        ACTIVE_IDS=$(echo "$RULESETS_JSON" | jq -r '[.[] | select(.enforcement == "active") | .id] | .[]' 2>/dev/null || echo "")
 
         if [[ -z "$ACTIVE_IDS" ]]; then
             fail "Rulesets exist but none are actively enforced for '$PROTECTED_BRANCH'"
@@ -122,10 +130,10 @@ else
                     continue
                 fi
 
-                HAS_PR_RULE=$(echo "$RULESET_DETAIL" | gh api --input - --jq '[.rules[] | select(.type == "pull_request")] | length' 2>/dev/null || echo "0")
+                HAS_PR_RULE=$(echo "$RULESET_DETAIL" | jq '[.rules[] | select(.type == "pull_request")] | length' 2>/dev/null || echo "0")
                 if [[ "$HAS_PR_RULE" -gt 0 ]]; then
                     PR_REVIEW_FOUND=true
-                    RULESET_NAME=$(echo "$RULESET_DETAIL" | gh api --input - --jq '.name // "unnamed"' 2>/dev/null || echo "unnamed")
+                    RULESET_NAME=$(echo "$RULESET_DETAIL" | jq -r '.name // "unnamed"' 2>/dev/null || echo "unnamed")
                     pass "Pull request reviews are required (ruleset: $RULESET_NAME)"
                     break
                 fi
@@ -143,7 +151,7 @@ else
                     continue
                 fi
 
-                HAS_STATUS_RULE=$(echo "$RULESET_DETAIL" | gh api --input - --jq '[.rules[] | select(.type == "required_status_checks")] | length' 2>/dev/null || echo "0")
+                HAS_STATUS_RULE=$(echo "$RULESET_DETAIL" | jq '[.rules[] | select(.type == "required_status_checks")] | length' 2>/dev/null || echo "0")
                 if [[ "$HAS_STATUS_RULE" -gt 0 ]]; then
                     STATUS_CHECK_FOUND=true
                     break
@@ -165,17 +173,16 @@ echo ""
 # --- Check 3: GitHub App installation ---
 echo -e "${BOLD}3. GitHub App installation${RESET}"
 
-# Try the installations endpoint (accessible with user tokens)
-INSTALLATIONS=$(gh api "repos/$REPO/installations" --jq '.installations' 2>/dev/null || echo "")
+# Try the installations endpoint (accessible with user tokens that have admin access)
+INSTALLATIONS_RAW=$(gh api "repos/$REPO/installations" 2>/dev/null || echo "")
+INSTALLATIONS=$(echo "$INSTALLATIONS_RAW" | jq '.installations // [] | length' 2>/dev/null || echo "0")
 
-if [[ -n "$INSTALLATIONS" && "$INSTALLATIONS" != "[]" && "$INSTALLATIONS" != "null" ]]; then
-    APP_SLUG=$(echo "$INSTALLATIONS" | gh api --input - --jq '.[0].app_slug // "unknown"' 2>/dev/null || echo "unknown")
-    PERMISSIONS=$(echo "$INSTALLATIONS" | gh api --input - --jq '.[0].permissions // {}' 2>/dev/null || echo "{}")
+if [[ "$INSTALLATIONS" -gt 0 ]]; then
+    APP_SLUG=$(echo "$INSTALLATIONS_RAW" | jq -r '.installations[0].app_slug // "unknown"' 2>/dev/null || echo "unknown")
+    CONTENTS_PERM=$(echo "$INSTALLATIONS_RAW" | jq -r '.installations[0].permissions.contents // "none"' 2>/dev/null || echo "none")
 
     pass "GitHub App '$APP_SLUG' is installed"
 
-    # Check contents permission
-    CONTENTS_PERM=$(echo "$PERMISSIONS" | gh api --input - --jq '.contents // "none"' 2>/dev/null || echo "none")
     if [[ "$CONTENTS_PERM" == "write" ]]; then
         pass "App has 'contents: write' permission"
     else
@@ -184,7 +191,6 @@ if [[ -n "$INSTALLATIONS" && "$INSTALLATIONS" != "[]" && "$INSTALLATIONS" != "nu
 else
     # Cannot verify App installation with current token — degrade to WARN
     warn "Cannot verify GitHub App installation with current credentials"
-    info "The 'repos/:owner/:repo/installation' endpoint requires App JWT authentication"
     info "If APP_ID and APP_PRIVATE_KEY secrets are configured, the App will be verified at workflow runtime"
 fi
 echo ""
@@ -197,8 +203,8 @@ REPO_SETTINGS=$(gh api "repos/$REPO" --jq '.permissions' 2>/dev/null || echo "{}
 # Check default workflow permissions via Actions settings
 ACTIONS_PERMS=$(gh api "repos/$REPO/actions/permissions/workflow" 2>/dev/null || echo "")
 if [[ -n "$ACTIONS_PERMS" ]]; then
-    DEFAULT_PERM=$(echo "$ACTIONS_PERMS" | gh api --input - --jq '.default_workflow_permissions // "unknown"' 2>/dev/null || echo "unknown")
-    CAN_APPROVE=$(echo "$ACTIONS_PERMS" | gh api --input - --jq '.can_approve_pull_request_reviews // false' 2>/dev/null || echo "false")
+    DEFAULT_PERM=$(echo "$ACTIONS_PERMS" | jq -r '.default_workflow_permissions // "unknown"' 2>/dev/null || echo "unknown")
+    CAN_APPROVE=$(echo "$ACTIONS_PERMS" | jq -r '.can_approve_pull_request_reviews // false' 2>/dev/null || echo "false")
 
     info "Default workflow token permissions: $DEFAULT_PERM"
     info "Workflows can approve PRs: $CAN_APPROVE"
