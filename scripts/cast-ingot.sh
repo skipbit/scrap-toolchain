@@ -182,6 +182,17 @@ EXPECTED_SHA=$(echo "$BINARY_ENTRY" | jq -r '.sha256')
 STRIP_COMPONENTS=$(echo "$BINARY_ENTRY" | jq -r '.strip_components // 1')
 ROOT_DIR=$(echo "$BINARY_ENTRY" | jq -r '.root_dir // empty')
 
+if [[ -z "$DL_URL" || "$DL_URL" == "null" || -z "$EXPECTED_SHA" || "$EXPECTED_SHA" == "null" ]]; then
+    fail "Incomplete binary entry: missing url or sha256"
+    exit 2
+fi
+
+# Validate strip_components is a non-negative integer
+if ! [[ "$STRIP_COMPONENTS" =~ ^[0-9]+$ ]]; then
+    fail "Invalid strip_components value: ${STRIP_COMPONENTS}"
+    exit 2
+fi
+
 pass "Binary found: ${DL_URL}"
 info "SHA256: ${EXPECTED_SHA}"
 info "strip_components: ${STRIP_COMPONENTS}"
@@ -477,7 +488,7 @@ lines.append(f'platform = \"{platform}\"')
 lines.append(f'arch = \"{arch}\"')
 if glibc:
     lines.append(f'glibc_version = \"{glibc}\"')
-lines.append(f'built_at = {built_at}')
+lines.append(f'built_at = \"{built_at}\"')
 lines.append(f'source_type = \"{source_type}\"')
 
 with open(output, 'w') as f:

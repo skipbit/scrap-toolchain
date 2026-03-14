@@ -76,7 +76,10 @@ fi
 
 API_AVAILABLE=false
 if [[ -n "$GITHUB_TOKEN" && -n "$GITHUB_REPOSITORY" ]]; then
-    if command -v curl &>/dev/null; then
+    # Validate repository format (owner/repo)
+    if ! [[ "$GITHUB_REPOSITORY" =~ ^[A-Za-z0-9._-]+/[A-Za-z0-9._-]+$ ]]; then
+        warn "Invalid GITHUB_REPOSITORY format: ${GITHUB_REPOSITORY}"
+    elif command -v curl &>/dev/null; then
         API_AVAILABLE=true
     else
         warn "curl not available; Releases API fallback disabled"
@@ -101,18 +104,16 @@ add_summary ""
 api_call() {
     local endpoint="$1"
     local attempt
+    local body_file="${TMPDIR_INDEX}/api_body"
     for attempt in $(seq 1 "$MAX_API_RETRIES"); do
-        local response http_code body
-        response=$(curl -s --max-time 30 -w "\n%{http_code}" \
+        local http_code
+        http_code=$(curl -s --max-time 30 -o "$body_file" -w "%{http_code}" \
             -H "Authorization: token ${GITHUB_TOKEN}" \
             -H "Accept: application/vnd.github+json" \
             "https://api.github.com/${endpoint}" 2>/dev/null) || true
 
-        http_code=$(echo "$response" | tail -1)
-        body=$(echo "$response" | sed '$d')
-
         if [[ "$http_code" =~ ^2 ]]; then
-            echo "$body"
+            cat "$body_file"
             return 0
         fi
 
@@ -151,9 +152,8 @@ resolve_release_tag() {
         local tags
         set +e
         tags=$(api_call "repos/${GITHUB_REPOSITORY}/tags?per_page=100" 2>/dev/null \
-            | jq -r '.[].name' \
-            | grep "^${tag_prefix}" \
-            | sort -V)
+            | jq -r --arg prefix "$tag_prefix" '[.[].name | select(startswith($prefix))] | sort | .[]' \
+            )
         set -e
 
         if [[ -n "$tags" ]]; then
@@ -165,6 +165,19 @@ resolve_release_tag() {
     # No tag found; use default pattern (initial release)
     echo "${tag_prefix}"
     return 0
+}
+
+# --- Generate empty index ---
+# Writes a valid but empty index.toml
+write_empty_index() {
+    python3 -c "
+from datetime import datetime, timezone
+ts = datetime.now(timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ')
+print('[index]')
+print('schema_version = 1')
+print(f'generated_at = \"{ts}\"')
+print('generator = \"scripts/generate-index.sh\"')
+" > "$INDEX_FILE"
 }
 
 # --- Collect ingot metadata ---
@@ -277,16 +290,7 @@ echo -e "${BOLD}1. Scan molds${RESET}"
 
 if [[ ! -d "$MOLDS_DIR" ]]; then
     info "No molds/ directory found; generating empty index"
-
-    python3 -c "
-from datetime import datetime, timezone
-ts = datetime.now(timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ')
-print('[index]')
-print('schema_version = 1')
-print(f'generated_at = {ts}')
-print('generator = \"scripts/generate-index.sh\"')
-" > "$INDEX_FILE"
-
+    write_empty_index
     pass "Generated empty ${INDEX_FILE}"
     add_summary "- :white_check_mark: Empty index generated (no molds/)"
     if [[ -n "${GITHUB_STEP_SUMMARY:-}" ]]; then
@@ -302,16 +306,7 @@ done < <(find "$MOLDS_DIR" -name "mold.toml" -type f 2>/dev/null | sort)
 
 if [[ ${#MOLD_PATHS[@]} -eq 0 ]]; then
     info "No mold.toml files found; generating empty index"
-
-    python3 -c "
-from datetime import datetime, timezone
-ts = datetime.now(timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ')
-print('[index]')
-print('schema_version = 1')
-print(f'generated_at = {ts}')
-print('generator = \"scripts/generate-index.sh\"')
-" > "$INDEX_FILE"
-
+    write_empty_index
     pass "Generated empty ${INDEX_FILE}"
     add_summary "- :white_check_mark: Empty index generated (no molds found)"
     if [[ -n "${GITHUB_STEP_SUMMARY:-}" ]]; then
@@ -459,6 +454,10 @@ from datetime import datetime, timezone
 
 toolchains = json.load(sys.stdin)
 
+def esc(val):
+    \"\"\"Escape a string value for TOML basic strings.\"\"\"
+    return str(val).replace('\\\\', '\\\\\\\\').replace('\"', '\\\\\"').replace('\\n', '\\\\n')
+
 # Sort toolchains by family, then version
 toolchains.sort(key=lambda tc: (tc['family'], tc['version']))
 
@@ -466,32 +465,32 @@ lines = []
 lines.append('[index]')
 lines.append('schema_version = 1')
 ts = datetime.now(timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ')
-lines.append(f'generated_at = {ts}')
+lines.append(f'generated_at = \"{ts}\"')
 lines.append('generator = \"scripts/generate-index.sh\"')
 
 for tc in toolchains:
     lines.append('')
     lines.append('[[toolchains]]')
-    lines.append(f'family = \"{tc[\"family\"]}\"')
-    lines.append(f'version = \"{tc[\"version\"]}\"')
-    lines.append(f'status = \"{tc[\"status\"]}\"')
-    lines.append(f'license = \"{tc[\"license\"]}\"')
-    lines.append(f'source_type = \"{tc[\"source_type\"]}\"')
-    lines.append(f'compiler = \"{tc[\"compiler\"]}\"')
+    lines.append(f'family = \"{esc(tc[\"family\"])}\"')
+    lines.append(f'version = \"{esc(tc[\"version\"])}\"')
+    lines.append(f'status = \"{esc(tc[\"status\"])}\"')
+    lines.append(f'license = \"{esc(tc[\"license\"])}\"')
+    lines.append(f'source_type = \"{esc(tc[\"source_type\"])}\"')
+    lines.append(f'compiler = \"{esc(tc[\"compiler\"])}\"')
     if tc.get('min_scrap_version'):
-        lines.append(f'min_scrap_version = \"{tc[\"min_scrap_version\"]}\"')
+        lines.append(f'min_scrap_version = \"{esc(tc[\"min_scrap_version\"])}\"')
 
     # Sort ingots by platform, then arch
     ingots = sorted(tc.get('ingots', []), key=lambda i: (i['platform'], i['arch']))
     for ingot in ingots:
         lines.append('')
         lines.append('[[toolchains.ingots]]')
-        lines.append(f'platform = \"{ingot[\"platform\"]}\"')
-        lines.append(f'arch = \"{ingot[\"arch\"]}\"')
-        lines.append(f'url = \"{ingot[\"url\"]}\"')
-        lines.append(f'sha256 = \"{ingot[\"sha256\"]}\"')
+        lines.append(f'platform = \"{esc(ingot[\"platform\"])}\"')
+        lines.append(f'arch = \"{esc(ingot[\"arch\"])}\"')
+        lines.append(f'url = \"{esc(ingot[\"url\"])}\"')
+        lines.append(f'sha256 = \"{esc(ingot[\"sha256\"])}\"')
         if ingot.get('glibc_version'):
-            lines.append(f'glibc_version = \"{ingot[\"glibc_version\"]}\"')
+            lines.append(f'glibc_version = \"{esc(ingot[\"glibc_version\"])}\"')
 
 print('\n'.join(lines) + '\n')
 " > "${TMPDIR_INDEX}/index.toml"
