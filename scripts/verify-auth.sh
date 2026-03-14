@@ -14,6 +14,9 @@ set -euo pipefail
 REPO="${GITHUB_REPOSITORY:-skipbit/scrap-toolchain}"
 REQUIRED_SECRETS=("APP_ID" "APP_PRIVATE_KEY")
 PROTECTED_BRANCH="main"
+# Set to a specific App slug (e.g., "scrap-toolchain-ci") to verify only that App.
+# When empty, any App with contents: write will pass the check.
+EXPECTED_APP_SLUG=""
 
 # --- Colors (disabled if not a terminal) ---
 if [[ -t 1 ]]; then
@@ -67,15 +70,19 @@ echo ""
 # --- Check 1: Repository secrets ---
 echo -e "${BOLD}1. Repository secrets${RESET}"
 
-SECRETS_JSON=$(gh secret list --repo "$REPO" --json name 2>/dev/null || echo "[]")
-
-for secret_name in "${REQUIRED_SECRETS[@]}"; do
-    if echo "$SECRETS_JSON" | jq -e --arg n "$secret_name" '.[] | select(.name == $n)' > /dev/null 2>&1; then
-        pass "Secret '$secret_name' is configured"
-    else
-        fail "Secret '$secret_name' is not configured"
-    fi
-done
+SECRETS_JSON=""
+if SECRETS_JSON=$(gh secret list --repo "$REPO" --json name 2>/dev/null); then
+    for secret_name in "${REQUIRED_SECRETS[@]}"; do
+        if echo "$SECRETS_JSON" | jq -e --arg n "$secret_name" '.[] | select(.name == $n)' > /dev/null 2>&1; then
+            pass "Secret '$secret_name' is configured"
+        else
+            fail "Secret '$secret_name' is not configured"
+        fi
+    done
+else
+    warn "Could not list repository secrets (possible insufficient permissions)"
+    info "Ensure the token has admin access to list secrets"
+fi
 echo ""
 
 # --- Check 2: Branch protection rules ---
@@ -238,8 +245,10 @@ if [[ "$INSTALLATIONS" -gt 0 ]]; then
         INSTALLED_SLUGS="$INSTALLED_SLUGS $SLUG"
 
         if [[ "$PERM" == "write" ]]; then
-            CONTENTS_WRITE_FOUND=true
-            CONTENTS_WRITE_SLUG="$SLUG"
+            if [[ -z "$EXPECTED_APP_SLUG" || "$SLUG" == "$EXPECTED_APP_SLUG" ]]; then
+                CONTENTS_WRITE_FOUND=true
+                CONTENTS_WRITE_SLUG="$SLUG"
+            fi
         fi
     done
 
@@ -249,7 +258,11 @@ if [[ "$INSTALLATIONS" -gt 0 ]]; then
     if [[ "$CONTENTS_WRITE_FOUND" == "true" ]]; then
         pass "App '$CONTENTS_WRITE_SLUG' has 'contents: write' permission"
     else
-        fail "No installed App has 'contents: write' permission"
+        if [[ -n "$EXPECTED_APP_SLUG" ]]; then
+            fail "Expected App '$EXPECTED_APP_SLUG' not found or does not have 'contents: write' permission"
+        else
+            fail "No installed App has 'contents: write' permission"
+        fi
     fi
 else
     # Cannot verify App installation with current token — degrade to WARN

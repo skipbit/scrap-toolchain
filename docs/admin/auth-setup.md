@@ -8,7 +8,7 @@ The pipeline has three workflows with distinct permission requirements:
 
 | Workflow | Trigger | Token Type | Permissions |
 |----------|---------|------------|-------------|
-| `pr-validation.yml` | `pull_request` | Default `GITHUB_TOKEN` | `contents: read`, `pull-requests: write` |
+| `pr-validation.yml` | `pull_request` | Default `GITHUB_TOKEN` | `contents: read`, `pull-requests: write` <!-- Required for posting validation failure comments on PRs --> |
 | `ingot-cast.yml` | `push` to main / `workflow_dispatch` | Default `GITHUB_TOKEN` | `contents: write` |
 | `index-update.yml` | `workflow_run` / `workflow_dispatch` | **GitHub App token** | `contents: write` |
 
@@ -92,6 +92,7 @@ Go to **Repository Settings** > **Rules** > **Rulesets** > **New ruleset** > **N
   - [x] Require status checks to pass
     - Add required checks (after workflows are created):
       - `validate` (from `pr-validation.yml`)
+      - **Note**: The check name will not appear in the GitHub UI until the workflow has run at least once.
     - [x] Require branches to be up to date before merging
   - [x] Block force pushes
   - [ ] Require signed commits (not required for now)
@@ -113,6 +114,7 @@ This script checks:
 - Repository secrets are configured (names only, not values)
 - Ruleset configuration is in place
 - GitHub App installation is accessible
+- Repository workflow token permissions
 
 ## Usage in Workflows
 
@@ -141,9 +143,9 @@ jobs:
           GITHUB_TOKEN: ${{ steps.app-token.outputs.token }}
         run: |
           git config user.name "scrap-toolchain-ci[bot]"
-          # Replace <APP_ID> with the App's bot user ID.
+          # Replace <BOT_USER_ID> with the App's bot user ID (not the App ID secret).
           # Find it via: https://api.github.com/users/scrap-toolchain-ci%5Bbot%5D
-          git config user.email "<APP_ID>+scrap-toolchain-ci[bot]@users.noreply.github.com"
+          git config user.email "<BOT_USER_ID>+scrap-toolchain-ci[bot]@users.noreply.github.com"
           git add index.toml
           git commit -m "update index.toml"
           git push
