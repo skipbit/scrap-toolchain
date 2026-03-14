@@ -76,12 +76,13 @@ echo ""
 # --- Check 2: Branch protection rules ---
 echo -e "${BOLD}2. Branch protection for '$PROTECTED_BRANCH'${RESET}"
 
+BRANCH_PROTECTED=false
 BP_JSON=$(gh api "repos/$REPO/branches/$PROTECTED_BRANCH/protection" 2>/dev/null || echo "")
 
-if [[ -z "$BP_JSON" ]]; then
-    fail "No branch protection rules found for '$PROTECTED_BRANCH'"
-else
-    pass "Branch protection is enabled for '$PROTECTED_BRANCH'"
+if [[ -n "$BP_JSON" ]]; then
+    # Legacy branch protection API returned data
+    BRANCH_PROTECTED=true
+    pass "Branch protection is enabled for '$PROTECTED_BRANCH' (legacy rules)"
 
     # Check require PR reviews
     REQUIRE_PR=$(echo "$BP_JSON" | gh api --input - --jq '.required_pull_request_reviews // empty' 2>/dev/null || echo "")
@@ -98,20 +99,78 @@ else
     else
         warn "Status checks are not yet required (configure after workflows are created)"
     fi
+else
+    # Legacy API returned 404 — try Rulesets API (GitHub repository rules)
+    RULESETS_JSON=$(gh api "repos/$REPO/rulesets" 2>/dev/null || echo "[]")
+    RULESET_COUNT=$(echo "$RULESETS_JSON" | gh api --input - --jq 'length' 2>/dev/null || echo "0")
+
+    if [[ "$RULESET_COUNT" -gt 0 ]]; then
+        # Find active rulesets targeting the protected branch
+        ACTIVE_IDS=$(echo "$RULESETS_JSON" | gh api --input - --jq '[.[] | select(.enforcement == "active") | .id] | .[]' 2>/dev/null || echo "")
+
+        if [[ -z "$ACTIVE_IDS" ]]; then
+            fail "Rulesets exist but none are actively enforced for '$PROTECTED_BRANCH'"
+        else
+            pass "Branch protection is enabled for '$PROTECTED_BRANCH' (rulesets)"
+            BRANCH_PROTECTED=true
+
+            # Check each active ruleset for pull_request rule
+            PR_REVIEW_FOUND=false
+            for ruleset_id in $ACTIVE_IDS; do
+                RULESET_DETAIL=$(gh api "repos/$REPO/rulesets/$ruleset_id" 2>/dev/null || echo "")
+                if [[ -z "$RULESET_DETAIL" ]]; then
+                    continue
+                fi
+
+                HAS_PR_RULE=$(echo "$RULESET_DETAIL" | gh api --input - --jq '[.rules[] | select(.type == "pull_request")] | length' 2>/dev/null || echo "0")
+                if [[ "$HAS_PR_RULE" -gt 0 ]]; then
+                    PR_REVIEW_FOUND=true
+                    RULESET_NAME=$(echo "$RULESET_DETAIL" | gh api --input - --jq '.name // "unnamed"' 2>/dev/null || echo "unnamed")
+                    pass "Pull request reviews are required (ruleset: $RULESET_NAME)"
+                    break
+                fi
+            done
+
+            if [[ "$PR_REVIEW_FOUND" == "false" ]]; then
+                fail "Pull request reviews are not required in any active ruleset"
+            fi
+
+            # Status checks are often configured later
+            STATUS_CHECK_FOUND=false
+            for ruleset_id in $ACTIVE_IDS; do
+                RULESET_DETAIL=$(gh api "repos/$REPO/rulesets/$ruleset_id" 2>/dev/null || echo "")
+                if [[ -z "$RULESET_DETAIL" ]]; then
+                    continue
+                fi
+
+                HAS_STATUS_RULE=$(echo "$RULESET_DETAIL" | gh api --input - --jq '[.rules[] | select(.type == "required_status_checks")] | length' 2>/dev/null || echo "0")
+                if [[ "$HAS_STATUS_RULE" -gt 0 ]]; then
+                    STATUS_CHECK_FOUND=true
+                    break
+                fi
+            done
+
+            if [[ "$STATUS_CHECK_FOUND" == "true" ]]; then
+                pass "Status checks are required"
+            else
+                warn "Status checks are not yet required (configure after workflows are created)"
+            fi
+        fi
+    else
+        fail "No branch protection rules or rulesets found for '$PROTECTED_BRANCH'"
+    fi
 fi
 echo ""
 
 # --- Check 3: GitHub App installation ---
 echo -e "${BOLD}3. GitHub App installation${RESET}"
 
-INSTALLATIONS=$(gh api "repos/$REPO/installation" 2>/dev/null || echo "")
+# Try the installations endpoint (accessible with user tokens)
+INSTALLATIONS=$(gh api "repos/$REPO/installations" --jq '.installations' 2>/dev/null || echo "")
 
-if [[ -z "$INSTALLATIONS" ]]; then
-    warn "No GitHub App installation detected on this repository"
-    info "Install the GitHub App and run this check again after setup"
-else
-    APP_SLUG=$(echo "$INSTALLATIONS" | gh api --input - --jq '.app_slug // "unknown"' 2>/dev/null || echo "unknown")
-    PERMISSIONS=$(echo "$INSTALLATIONS" | gh api --input - --jq '.permissions // {}' 2>/dev/null || echo "{}")
+if [[ -n "$INSTALLATIONS" && "$INSTALLATIONS" != "[]" && "$INSTALLATIONS" != "null" ]]; then
+    APP_SLUG=$(echo "$INSTALLATIONS" | gh api --input - --jq '.[0].app_slug // "unknown"' 2>/dev/null || echo "unknown")
+    PERMISSIONS=$(echo "$INSTALLATIONS" | gh api --input - --jq '.[0].permissions // {}' 2>/dev/null || echo "{}")
 
     pass "GitHub App '$APP_SLUG' is installed"
 
@@ -122,6 +181,11 @@ else
     else
         fail "App has 'contents: $CONTENTS_PERM' (expected 'write')"
     fi
+else
+    # Cannot verify App installation with current token — degrade to WARN
+    warn "Cannot verify GitHub App installation with current credentials"
+    info "The 'repos/:owner/:repo/installation' endpoint requires App JWT authentication"
+    info "If APP_ID and APP_PRIVATE_KEY secrets are configured, the App will be verified at workflow runtime"
 fi
 echo ""
 
