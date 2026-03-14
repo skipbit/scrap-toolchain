@@ -45,6 +45,11 @@ if ! command -v gh &>/dev/null; then
     exit 2
 fi
 
+if ! command -v jq &>/dev/null; then
+    echo "Error: jq is not installed. Install from https://jqlang.github.io/jq/"
+    exit 2
+fi
+
 if ! gh auth status &>/dev/null; then
     echo "Error: gh CLI is not authenticated. Run 'gh auth login' first."
     exit 2
@@ -65,7 +70,7 @@ echo -e "${BOLD}1. Repository secrets${RESET}"
 SECRETS_JSON=$(gh secret list --repo "$REPO" --json name 2>/dev/null || echo "[]")
 
 for secret_name in "${REQUIRED_SECRETS[@]}"; do
-    if echo "$SECRETS_JSON" | grep -q "\"$secret_name\""; then
+    if echo "$SECRETS_JSON" | jq -e --arg n "$secret_name" '.[] | select(.name == $n)' > /dev/null 2>&1; then
         pass "Secret '$secret_name' is configured"
     else
         fail "Secret '$secret_name' is not configured"
@@ -78,19 +83,18 @@ echo -e "${BOLD}2. Branch protection for '$PROTECTED_BRANCH'${RESET}"
 
 BRANCH_PROTECTED=false
 
-# Try legacy branch protection API first (check HTTP status to distinguish 404)
-if gh api "repos/$REPO/branches/$PROTECTED_BRANCH/protection" --silent 2>/dev/null; then
-    BP_LEGACY=true
-else
-    BP_LEGACY=false
-fi
+# Try legacy branch protection API first with proper HTTP status handling
+BP_RESPONSE=$(gh api "repos/$REPO/branches/$PROTECTED_BRANCH/protection" \
+    --include 2>/dev/null || true)
 
-if [[ "$BP_LEGACY" == "true" ]]; then
+# Extract HTTP status code from the response headers
+BP_HTTP_STATUS=$(echo "$BP_RESPONSE" | head -1 | grep -oE '[0-9]{3}' | head -1)
+BP_JSON=$(echo "$BP_RESPONSE" | sed '1,/^\r*$/d')
+
+if [[ "$BP_HTTP_STATUS" =~ ^2 ]]; then
     # Legacy branch protection is configured
     BRANCH_PROTECTED=true
     pass "Branch protection is enabled for '$PROTECTED_BRANCH' (legacy rules)"
-
-    BP_JSON=$(gh api "repos/$REPO/branches/$PROTECTED_BRANCH/protection" 2>/dev/null || echo "")
 
     # Check require PR reviews
     REQUIRE_PR=$(echo "$BP_JSON" | jq '.required_pull_request_reviews // empty' 2>/dev/null || echo "")
@@ -107,24 +111,61 @@ if [[ "$BP_LEGACY" == "true" ]]; then
     else
         warn "Status checks are not yet required (configure after workflows are created)"
     fi
-else
+elif [[ "$BP_HTTP_STATUS" == "404" ]]; then
     # Legacy API returned 404 — try Rulesets API (GitHub repository rules)
     RULESETS_JSON=$(gh api "repos/$REPO/rulesets" 2>/dev/null || echo "[]")
     RULESET_COUNT=$(echo "$RULESETS_JSON" | jq 'length' 2>/dev/null || echo "0")
 
     if [[ "$RULESET_COUNT" -gt 0 ]]; then
-        # Find active rulesets targeting the protected branch
+        # Find active rulesets and filter by branch target
         ACTIVE_IDS=$(echo "$RULESETS_JSON" | jq -r '[.[] | select(.enforcement == "active") | .id] | .[]' 2>/dev/null || echo "")
 
-        if [[ -z "$ACTIVE_IDS" ]]; then
-            fail "Rulesets exist but none are actively enforced for '$PROTECTED_BRANCH'"
+        # Filter active rulesets to only those targeting the protected branch
+        MATCHING_IDS=""
+        for ruleset_id in $ACTIVE_IDS; do
+            RULESET_DETAIL=$(gh api "repos/$REPO/rulesets/$ruleset_id" 2>/dev/null || echo "")
+            if [[ -z "$RULESET_DETAIL" ]]; then
+                continue
+            fi
+
+            # Check if the ruleset targets the protected branch via conditions.ref_name.include
+            INCLUDE_PATTERNS=$(echo "$RULESET_DETAIL" | jq -r '
+                .conditions.ref_name.include // [] | .[]
+            ' 2>/dev/null || echo "")
+
+            TARGETS_BRANCH=false
+
+            if [[ -z "$INCLUDE_PATTERNS" ]]; then
+                # Empty include array means all branches are targeted
+                TARGETS_BRANCH=true
+            else
+                for pattern in $INCLUDE_PATTERNS; do
+                    case "$pattern" in
+                        "refs/heads/$PROTECTED_BRANCH" | "~DEFAULT_BRANCH" | "~ALL")
+                            TARGETS_BRANCH=true
+                            break
+                            ;;
+                    esac
+                done
+            fi
+
+            if [[ "$TARGETS_BRANCH" == "true" ]]; then
+                MATCHING_IDS="$MATCHING_IDS $ruleset_id"
+            fi
+        done
+
+        # Trim leading space
+        MATCHING_IDS=$(echo "$MATCHING_IDS" | xargs)
+
+        if [[ -z "$MATCHING_IDS" ]]; then
+            fail "Rulesets exist but none target '$PROTECTED_BRANCH' or are actively enforced"
         else
             pass "Branch protection is enabled for '$PROTECTED_BRANCH' (rulesets)"
             BRANCH_PROTECTED=true
 
-            # Check each active ruleset for pull_request rule
+            # Check each matching ruleset for pull_request rule
             PR_REVIEW_FOUND=false
-            for ruleset_id in $ACTIVE_IDS; do
+            for ruleset_id in $MATCHING_IDS; do
                 RULESET_DETAIL=$(gh api "repos/$REPO/rulesets/$ruleset_id" 2>/dev/null || echo "")
                 if [[ -z "$RULESET_DETAIL" ]]; then
                     continue
@@ -145,7 +186,7 @@ else
 
             # Status checks are often configured later
             STATUS_CHECK_FOUND=false
-            for ruleset_id in $ACTIVE_IDS; do
+            for ruleset_id in $MATCHING_IDS; do
                 RULESET_DETAIL=$(gh api "repos/$REPO/rulesets/$ruleset_id" 2>/dev/null || echo "")
                 if [[ -z "$RULESET_DETAIL" ]]; then
                     continue
@@ -167,6 +208,14 @@ else
     else
         fail "No branch protection rules or rulesets found for '$PROTECTED_BRANCH'"
     fi
+elif [[ "$BP_HTTP_STATUS" == "401" || "$BP_HTTP_STATUS" == "403" ]]; then
+    warn "Cannot check branch protection: HTTP $BP_HTTP_STATUS (insufficient permissions)"
+    info "Re-run with a token that has admin access to check branch protection"
+elif [[ "$BP_HTTP_STATUS" =~ ^5 ]]; then
+    warn "Cannot check branch protection: GitHub API returned HTTP $BP_HTTP_STATUS (server error)"
+    info "Retry later or check GitHub status at https://www.githubstatus.com/"
+else
+    warn "Cannot check branch protection: unexpected HTTP status $BP_HTTP_STATUS"
 fi
 echo ""
 
@@ -178,15 +227,29 @@ INSTALLATIONS_RAW=$(gh api "repos/$REPO/installations" 2>/dev/null || echo "")
 INSTALLATIONS=$(echo "$INSTALLATIONS_RAW" | jq '.installations // [] | length' 2>/dev/null || echo "0")
 
 if [[ "$INSTALLATIONS" -gt 0 ]]; then
-    APP_SLUG=$(echo "$INSTALLATIONS_RAW" | jq -r '.installations[0].app_slug // "unknown"' 2>/dev/null || echo "unknown")
-    CONTENTS_PERM=$(echo "$INSTALLATIONS_RAW" | jq -r '.installations[0].permissions.contents // "none"' 2>/dev/null || echo "none")
+    # Scan all installations for one with contents: write
+    CONTENTS_WRITE_FOUND=false
+    CONTENTS_WRITE_SLUG=""
+    INSTALLED_SLUGS=""
 
-    pass "GitHub App '$APP_SLUG' is installed"
+    for idx in $(seq 0 $((INSTALLATIONS - 1))); do
+        SLUG=$(echo "$INSTALLATIONS_RAW" | jq -r ".installations[$idx].app_slug // \"unknown\"" 2>/dev/null || echo "unknown")
+        PERM=$(echo "$INSTALLATIONS_RAW" | jq -r ".installations[$idx].permissions.contents // \"none\"" 2>/dev/null || echo "none")
+        INSTALLED_SLUGS="$INSTALLED_SLUGS $SLUG"
 
-    if [[ "$CONTENTS_PERM" == "write" ]]; then
-        pass "App has 'contents: write' permission"
+        if [[ "$PERM" == "write" ]]; then
+            CONTENTS_WRITE_FOUND=true
+            CONTENTS_WRITE_SLUG="$SLUG"
+        fi
+    done
+
+    INSTALLED_SLUGS=$(echo "$INSTALLED_SLUGS" | xargs)
+    info "Installed GitHub Apps: $INSTALLED_SLUGS"
+
+    if [[ "$CONTENTS_WRITE_FOUND" == "true" ]]; then
+        pass "App '$CONTENTS_WRITE_SLUG' has 'contents: write' permission"
     else
-        fail "App has 'contents: $CONTENTS_PERM' (expected 'write')"
+        fail "No installed App has 'contents: write' permission"
     fi
 else
     # Cannot verify App installation with current token — degrade to WARN

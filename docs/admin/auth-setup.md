@@ -17,11 +17,11 @@ The pipeline has three workflows with distinct permission requirements:
 The default `GITHUB_TOKEN` has two limitations that prevent its use in `index-update.yml`:
 
 1. **No workflow trigger propagation** — Pushes made with the default `GITHUB_TOKEN` do not trigger subsequent GitHub Actions workflows. If `index-update.yml` commits and pushes `index.toml` with the default token, no downstream workflows (e.g., future CI checks on main) would run.
-2. **Branch protection bypass** — The default `GITHUB_TOKEN` cannot push to branches protected by branch protection rules that require status checks or PR reviews.
+2. **Branch protection bypass** — The default `GITHUB_TOKEN` cannot push to branches protected by rulesets that require status checks or PR reviews.
 
-A **GitHub App installation token** solves both issues: pushes made with an App token trigger workflows normally, and the App can be granted bypass permissions for branch protection.
+A **GitHub App installation token** solves both issues: pushes made with an App token trigger workflows normally, and the App can be added as a bypass actor in rulesets.
 
-A deploy key is an alternative but only solves issue (2) and does not trigger workflows. Since the current design does not require workflow triggers from index-update pushes, a deploy key would also work. However, a GitHub App is recommended for future flexibility.
+A **deploy key** is another alternative. Deploy keys can push to protected branches (when added as a bypass actor) and pushes made with a deploy key **do** trigger workflows. However, deploy keys lack the fine-grained permission model that GitHub Apps provide — a deploy key grants broad read/write access to the repository without the ability to scope permissions (e.g., `contents: write` only) or to manage bypass rules at the App level. A GitHub App also provides short-lived tokens (1 hour) rather than a long-lived SSH key.
 
 ## Decision: GitHub App Token
 
@@ -29,9 +29,9 @@ A deploy key is an alternative but only solves issue (2) and does not trigger wo
 
 **Rationale**:
 - Fine-grained permissions (only `contents: write` on this repository)
-- Pushes trigger subsequent workflows if needed
-- Can bypass branch protection when configured
-- No long-lived PAT to manage; tokens are short-lived (1 hour)
+- Pushes trigger subsequent workflows (unlike `GITHUB_TOKEN`)
+- Can be added as a bypass actor in rulesets for controlled direct pushes
+- Short-lived tokens (1 hour expiry) — no long-lived PAT or SSH key to manage
 - Official GitHub-maintained action with first-party support
 
 ## Setup Instructions
@@ -40,7 +40,7 @@ A deploy key is an alternative but only solves issue (2) and does not trigger wo
 
 1. Go to **GitHub Organization Settings** > **Developer settings** > **GitHub Apps** > **New GitHub App**
 2. Configure the App:
-   - **Name**: `scrap-toolchain-ci` (or similar unique name)
+   - **Name**: `scrap-toolchain-ci` (or similar unique name — note that GitHub App names must be globally unique across all of GitHub)
    - **Homepage URL**: `https://github.com/skipbit/scrap-toolchain`
    - **Webhook**: Uncheck "Active" (no webhook needed)
    - **Permissions**:
@@ -74,26 +74,34 @@ Go to **Repository Settings** > **Secrets and variables** > **Actions** and add:
 | `APP_ID` | The App ID from Step 1 | GitHub App identifier |
 | `APP_PRIVATE_KEY` | Contents of the `.pem` file from Step 2 | GitHub App private key (PEM format) |
 
-### Step 5: Configure Branch Protection Rules
+### Step 5: Configure Repository Rulesets
 
-Go to **Repository Settings** > **Branches** > **Add branch protection rule**:
+Go to **Repository Settings** > **Rules** > **Rulesets** > **New ruleset** > **New branch ruleset**:
 
-- **Branch name pattern**: `main`
-- **Settings**:
+- **Ruleset name**: `main branch protection`
+- **Enforcement status**: Active
+- **Target branches**: Add target > Include default branch (`main`)
+- **Bypass list**:
+  - Click **Add bypass** > select the GitHub App (`scrap-toolchain-ci`) > set mode to **Always**
+  - This allows `index-update.yml` to push directly to `main` using the App token
+- **Branch rules**:
+  - [x] Restrict deletions
   - [x] Require a pull request before merging
-    - [x] Require approvals (1)
+    - Required approvals: 1
     - [x] Dismiss stale pull request approvals when new commits are pushed
-  - [x] Require status checks to pass before merging
-    - Required checks (to be added after workflows are created):
+  - [x] Require status checks to pass
+    - Add required checks (after workflows are created):
       - `validate` (from `pr-validation.yml`)
-  - [x] Require branches to be up to date before merging
-  - [x] Do not allow bypassing the above settings
+    - [x] Require branches to be up to date before merging
+  - [x] Block force pushes
   - [ ] Require signed commits (not required for now)
   - [ ] Require linear history (not required; merge commits are acceptable)
 
-> **Note**: The GitHub App (`scrap-toolchain-ci`) needs to be added to the branch protection bypass list so that `index-update.yml` can push directly to `main`. This is configured in **Settings** > **Branches** > **main** protection rule > **Allow specified actors to bypass required pull requests** > Add the GitHub App.
-
 ### Step 6: Verify Configuration
+
+**Prerequisites**: The verification script requires the following:
+- [`gh` CLI](https://cli.github.com/) — authenticated with admin access to the repository
+- [`jq`](https://jqlang.github.io/jq/) — for JSON processing
 
 Run the verification script to confirm the setup:
 
@@ -103,7 +111,7 @@ scripts/verify-auth.sh
 
 This script checks:
 - Repository secrets are configured (names only, not values)
-- Branch protection rules are in place
+- Ruleset configuration is in place
 - GitHub App installation is accessible
 
 ## Usage in Workflows
@@ -133,6 +141,8 @@ jobs:
           GITHUB_TOKEN: ${{ steps.app-token.outputs.token }}
         run: |
           git config user.name "scrap-toolchain-ci[bot]"
+          # Replace <APP_ID> with the App's bot user ID.
+          # Find it via: https://api.github.com/users/scrap-toolchain-ci%5Bbot%5D
           git config user.email "<APP_ID>+scrap-toolchain-ci[bot]@users.noreply.github.com"
           git add index.toml
           git commit -m "update index.toml"
@@ -183,10 +193,10 @@ permissions:
 - Ensure secrets `APP_ID` and `APP_PRIVATE_KEY` are correctly set
 
 ### index-update push rejected by branch protection
-- Add the GitHub App to the branch protection bypass list
-- Go to **Settings** > **Branches** > **main** > **Allow specified actors to bypass required pull requests** > Add the App
+- Add the GitHub App to the ruleset bypass list
+- Go to **Settings** > **Rules** > **Rulesets** > select the `main branch protection` ruleset > **Bypass list** > **Add bypass** > select the App > set mode to **Always**
 
 ### Token generation fails
-- Verify the private key PEM format (starts with `-----BEGIN RSA PRIVATE KEY-----`)
+- Verify the private key PEM format (starts with `-----BEGIN RSA PRIVATE KEY-----` or `-----BEGIN PRIVATE KEY-----`)
 - Ensure the App ID matches the installed App
 - Check that the App installation has not been suspended
