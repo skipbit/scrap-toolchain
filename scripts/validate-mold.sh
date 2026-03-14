@@ -4,7 +4,8 @@
 # Usage: validate-mold.sh <mold-directory>
 #
 # Environment variables:
-#   SCHEMA_PATH — Path to mold-v1.schema.json (default: schema/mold-v1.schema.json)
+#   SCHEMA_PATH     — Path to mold-v1.schema.json (default: schema/mold-v1.schema.json)
+#   RETRY_INTERVAL  — Seconds between URL check retries (default: 60)
 #
 # Exit codes:
 #   0 = All validations passed
@@ -18,7 +19,7 @@ MOLD_DIR="${MOLD_DIR%/}"
 SCHEMA_PATH="${SCHEMA_PATH:-schema/mold-v1.schema.json}"
 
 MAX_RETRIES=3
-RETRY_INTERVAL=60
+RETRY_INTERVAL="${RETRY_INTERVAL:-60}"
 
 # --- Colors (disabled if not a terminal) ---
 if [[ -t 1 ]]; then
@@ -58,10 +59,19 @@ check_url() {
     _HTTP_CODE=""
     local attempt
     for attempt in $(seq 1 "$MAX_RETRIES"); do
-        _HTTP_CODE=$(curl -sS -o /dev/null -w "%{http_code}" --head \
+        # Try HEAD first
+        _HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" --head \
             --max-time 30 --location "$url" 2>/dev/null || echo "000")
         if [[ "$_HTTP_CODE" =~ ^2 ]]; then
             return 0
+        fi
+        # Fall back to GET if HEAD is rejected (405/403)
+        if [[ "$_HTTP_CODE" == "405" || "$_HTTP_CODE" == "403" ]]; then
+            _HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" \
+                --max-time 30 --location "$url" 2>/dev/null || echo "000")
+            if [[ "$_HTTP_CODE" =~ ^2 ]]; then
+                return 0
+            fi
         fi
         if [[ "$attempt" -lt "$MAX_RETRIES" ]]; then
             warn "Attempt $attempt/$MAX_RETRIES returned HTTP ${_HTTP_CODE}, retrying in ${RETRY_INTERVAL}s..."
@@ -91,6 +101,11 @@ for cmd in python3 curl jq; do
         exit 2
     fi
 done
+
+if ! command -v sha256sum &>/dev/null && ! command -v shasum &>/dev/null; then
+    echo "Error: sha256sum or shasum is required"
+    exit 2
+fi
 
 if ! python3 -c "import tomllib" 2>/dev/null; then
     echo "Error: Python 3.11+ with tomllib module is required"
@@ -124,13 +139,13 @@ add_summary ""
 MOLD_JSON_FILE="${TMPDIR_VALIDATE}/mold.json"
 
 set +e
-PARSE_ERROR=$(python3 -c "
+python3 -c "
 import tomllib, json, sys
 with open(sys.argv[1], 'rb') as f:
     data = tomllib.load(f)
 with open(sys.argv[2], 'w') as out:
     json.dump(data, out)
-" "$MOLD_TOML" "$MOLD_JSON_FILE" 2>&1)
+" "$MOLD_TOML" "$MOLD_JSON_FILE" 2>"${TMPDIR_VALIDATE}/parse_stderr"
 PARSE_EXIT=$?
 set -e
 
@@ -138,6 +153,7 @@ if [[ "$PARSE_EXIT" -eq 0 ]]; then
     pass "TOML syntax is valid"
     add_summary "- :white_check_mark: TOML syntax"
 else
+    PARSE_ERROR=$(cat "${TMPDIR_VALIDATE}/parse_stderr")
     fail "TOML syntax error: ${PARSE_ERROR}"
     add_summary "- :x: TOML syntax: ${PARSE_ERROR}"
     echo ""
@@ -149,8 +165,6 @@ else
     exit 1
 fi
 echo ""
-
-MOLD_JSON=$(cat "$MOLD_JSON_FILE")
 
 # --- Step 2: JSON Schema validation ---
 echo -e "${BOLD}2. JSON Schema validation${RESET}"
@@ -175,29 +189,37 @@ else:
         path = '.'.join(str(p) for p in err.absolute_path) if err.absolute_path else '(root)'
         print(f'FAIL:{path}: {err.message}')
     sys.exit(1)
-" "$SCHEMA_PATH" "$MOLD_JSON_FILE" 2>&1)
+" "$SCHEMA_PATH" "$MOLD_JSON_FILE" 2>"${TMPDIR_VALIDATE}/schema_stderr")
 SCHEMA_EXIT=$?
 set -e
 
 if [[ "$SCHEMA_EXIT" -eq 0 && "$SCHEMA_RESULT" == "OK" ]]; then
     pass "Schema validation passed"
     add_summary "- :white_check_mark: JSON Schema validation"
-else
+elif [[ "$SCHEMA_EXIT" -ne 0 ]]; then
+    HAS_FAIL_LINES=false
     while IFS= read -r line; do
         if [[ "$line" == FAIL:* ]]; then
             detail="${line#FAIL:}"
             fail "Schema: ${detail}"
             add_summary "- :x: Schema: ${detail}"
+            HAS_FAIL_LINES=true
         fi
     done <<< "$SCHEMA_RESULT"
+    # If Python crashed without producing FAIL: lines, report the raw error
+    if [[ "$HAS_FAIL_LINES" == "false" ]]; then
+        SCHEMA_STDERR=$(cat "${TMPDIR_VALIDATE}/schema_stderr")
+        fail "Schema validation error: ${SCHEMA_RESULT}${SCHEMA_STDERR:+ (${SCHEMA_STDERR})}"
+        add_summary "- :x: Schema validation error"
+    fi
 fi
 echo ""
 
 # --- Step 3: Path consistency ---
 echo -e "${BOLD}3. Path consistency${RESET}"
 
-MOLD_FAMILY=$(echo "$MOLD_JSON" | jq -r '.metadata.family // empty')
-MOLD_VERSION=$(echo "$MOLD_JSON" | jq -r '.metadata.version // empty')
+MOLD_FAMILY=$(jq -r '.metadata.family // empty' "$MOLD_JSON_FILE")
+MOLD_VERSION=$(jq -r '.metadata.version // empty' "$MOLD_JSON_FILE")
 
 DIR_VERSION=$(basename "$MOLD_DIR")
 DIR_FAMILY=$(basename "$(dirname "$MOLD_DIR")")
@@ -227,21 +249,21 @@ echo ""
 # --- Step 4: Source accessibility ---
 echo -e "${BOLD}4. Source accessibility${RESET}"
 
-SOURCE_TYPE=$(echo "$MOLD_JSON" | jq -r '.source.type // empty')
+SOURCE_TYPE=$(jq -r '.source.type // empty' "$MOLD_JSON_FILE")
 URLS_TO_CHECK=()
 
 if [[ "$SOURCE_TYPE" == "fetch" ]]; then
     while IFS= read -r url; do
         [[ -n "$url" ]] && URLS_TO_CHECK+=("$url")
-    done < <(echo "$MOLD_JSON" | jq -r '.source.binaries[]?.url // empty')
+    done < <(jq -r '.source.binaries[]?.url // empty' "$MOLD_JSON_FILE")
 
-    BF_ENABLED=$(echo "$MOLD_JSON" | jq -r '.source.build_fallback.enabled // false')
+    BF_ENABLED=$(jq -r '.source.build_fallback.enabled // false' "$MOLD_JSON_FILE")
     if [[ "$BF_ENABLED" == "true" ]]; then
-        BF_URL=$(echo "$MOLD_JSON" | jq -r '.source.build_fallback.source_url // empty')
+        BF_URL=$(jq -r '.source.build_fallback.source_url // empty' "$MOLD_JSON_FILE")
         [[ -n "$BF_URL" ]] && URLS_TO_CHECK+=("$BF_URL")
     fi
 elif [[ "$SOURCE_TYPE" == "build" ]]; then
-    BUILD_URL=$(echo "$MOLD_JSON" | jq -r '.source.build.source_url // empty')
+    BUILD_URL=$(jq -r '.source.build.source_url // empty' "$MOLD_JSON_FILE")
     [[ -n "$BUILD_URL" ]] && URLS_TO_CHECK+=("$BUILD_URL")
 fi
 
@@ -274,20 +296,20 @@ if [[ "$SOURCE_TYPE" == "fetch" ]]; then
     VERIFY_LABEL=""
 
     # Prefer linux-x86_64 (same platform as Light Build Verification)
-    VERIFY_URL=$(echo "$MOLD_JSON" | jq -r '
+    VERIFY_URL=$(jq -r '
         .source.binaries[] | select(.platform == "linux" and .arch == "x86_64") | .url
-    ' 2>/dev/null | head -1)
-    VERIFY_SHA256=$(echo "$MOLD_JSON" | jq -r '
+    ' "$MOLD_JSON_FILE" 2>/dev/null | head -1)
+    VERIFY_SHA256=$(jq -r '
         .source.binaries[] | select(.platform == "linux" and .arch == "x86_64") | .sha256
-    ' 2>/dev/null | head -1)
+    ' "$MOLD_JSON_FILE" 2>/dev/null | head -1)
 
     if [[ -n "$VERIFY_URL" ]]; then
         VERIFY_LABEL="linux-x86_64"
     else
-        VERIFY_URL=$(echo "$MOLD_JSON" | jq -r '.source.binaries[0].url // empty')
-        VERIFY_SHA256=$(echo "$MOLD_JSON" | jq -r '.source.binaries[0].sha256 // empty')
-        VERIFY_PLATFORM=$(echo "$MOLD_JSON" | jq -r '.source.binaries[0].platform // "unknown"')
-        VERIFY_ARCH=$(echo "$MOLD_JSON" | jq -r '.source.binaries[0].arch // "unknown"')
+        VERIFY_URL=$(jq -r '.source.binaries[0].url // empty' "$MOLD_JSON_FILE")
+        VERIFY_SHA256=$(jq -r '.source.binaries[0].sha256 // empty' "$MOLD_JSON_FILE")
+        VERIFY_PLATFORM=$(jq -r '.source.binaries[0].platform // "unknown"' "$MOLD_JSON_FILE")
+        VERIFY_ARCH=$(jq -r '.source.binaries[0].arch // "unknown"' "$MOLD_JSON_FILE")
         VERIFY_LABEL="${VERIFY_PLATFORM}-${VERIFY_ARCH}"
     fi
 
@@ -298,7 +320,7 @@ if [[ "$SOURCE_TYPE" == "fetch" ]]; then
         info "Downloading ${VERIFY_LABEL} archive for verification..."
         DL_FILE="${TMPDIR_VALIDATE}/archive"
         set +e
-        curl -sSL --max-time 300 -o "$DL_FILE" "$VERIFY_URL" 2>/dev/null
+        curl -fsSL --max-time 300 --retry 3 -o "$DL_FILE" "$VERIFY_URL" 2>/dev/null
         DL_EXIT=$?
         set -e
         if [[ "$DL_EXIT" -eq 0 && -f "$DL_FILE" ]]; then
@@ -316,8 +338,8 @@ if [[ "$SOURCE_TYPE" == "fetch" ]]; then
         fi
     fi
 elif [[ "$SOURCE_TYPE" == "build" ]]; then
-    BUILD_URL=$(echo "$MOLD_JSON" | jq -r '.source.build.source_url // empty')
-    BUILD_SHA=$(echo "$MOLD_JSON" | jq -r '.source.build.source_sha256 // empty')
+    BUILD_URL=$(jq -r '.source.build.source_url // empty' "$MOLD_JSON_FILE")
+    BUILD_SHA=$(jq -r '.source.build.source_sha256 // empty' "$MOLD_JSON_FILE")
 
     if [[ -z "$BUILD_URL" || -z "$BUILD_SHA" ]]; then
         fail "Missing source_url or source_sha256 for build type"
@@ -326,7 +348,7 @@ elif [[ "$SOURCE_TYPE" == "build" ]]; then
         info "Downloading source archive for verification..."
         DL_FILE="${TMPDIR_VALIDATE}/source"
         set +e
-        curl -sSL --max-time 300 -o "$DL_FILE" "$BUILD_URL" 2>/dev/null
+        curl -fsSL --max-time 300 --retry 3 -o "$DL_FILE" "$BUILD_URL" 2>/dev/null
         DL_EXIT=$?
         set -e
         if [[ "$DL_EXIT" -eq 0 && -f "$DL_FILE" ]]; then
@@ -352,18 +374,35 @@ echo ""
 # --- Step 6: Patches existence check ---
 echo -e "${BOLD}6. Patches existence check${RESET}"
 
-PATCHES_COUNT=$(echo "$MOLD_JSON" | jq '.patches // [] | length')
+PATCHES_COUNT=$(jq '.patches // [] | length' "$MOLD_JSON_FILE")
 
 if [[ "$PATCHES_COUNT" -eq 0 ]]; then
     info "No patches defined"
     add_summary "- :white_check_mark: Patches: none defined"
 else
     PATCH_FAILURES=0
+    # Resolve mold directory to absolute path for traversal check
+    MOLD_DIR_ABS=$(cd "$MOLD_DIR" && pwd)
     for idx in $(seq 0 $((PATCHES_COUNT - 1))); do
-        PATCH_FILE=$(echo "$MOLD_JSON" | jq -r ".patches[$idx].file")
+        PATCH_FILE=$(jq -r ".patches[$idx].file" "$MOLD_JSON_FILE")
+        # Reject absolute paths and path traversal
+        if [[ "$PATCH_FILE" == /* || "$PATCH_FILE" == *..* ]]; then
+            fail "Patch path contains traversal or is absolute: ${PATCH_FILE}"
+            add_summary "- :x: Invalid patch path: ${PATCH_FILE}"
+            PATCH_FAILURES=$((PATCH_FAILURES + 1))
+            continue
+        fi
         PATCH_PATH="${MOLD_DIR}/${PATCH_FILE}"
         if [[ -f "$PATCH_PATH" ]]; then
-            pass "Patch file exists: ${PATCH_FILE}"
+            # Verify resolved path is within the mold directory
+            PATCH_REAL=$(cd "$(dirname "$PATCH_PATH")" && pwd)/$(basename "$PATCH_PATH")
+            if [[ "$PATCH_REAL" != "${MOLD_DIR_ABS}/"* ]]; then
+                fail "Patch path escapes mold directory: ${PATCH_FILE}"
+                add_summary "- :x: Patch escapes mold dir: ${PATCH_FILE}"
+                PATCH_FAILURES=$((PATCH_FAILURES + 1))
+            else
+                pass "Patch file exists: ${PATCH_FILE}"
+            fi
         else
             fail "Patch file not found: ${PATCH_FILE}"
             add_summary "- :x: Missing patch: ${PATCH_FILE}"

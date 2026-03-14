@@ -3,6 +3,9 @@
 #
 # Usage: smoke-test.sh <ingot-root> <mold-directory>
 #
+# This script uses a fail-fast approach: each step exits immediately on failure
+# rather than accumulating errors, since later steps depend on earlier ones.
+#
 # Exit codes:
 #   0 = Test passed
 #   1 = Test failed (compilation error, execution failure, output mismatch)
@@ -21,17 +24,20 @@ TIMEOUT=30
 if [[ -t 1 ]]; then
     RED='\033[0;31m'
     GREEN='\033[0;32m'
+    YELLOW='\033[0;33m'
     BOLD='\033[1m'
     RESET='\033[0m'
 else
     RED=''
     GREEN=''
+    YELLOW=''
     BOLD=''
     RESET=''
 fi
 
 pass() { echo -e "  ${GREEN}PASS${RESET}: $1"; }
 fail_msg() { echo -e "  ${RED}FAIL${RESET}: $1"; }
+warn() { echo -e "  ${YELLOW}WARN${RESET}: $1"; }
 info() { echo -e "  ${BOLD}INFO${RESET}: $1"; }
 
 WORK_DIR=""
@@ -111,12 +117,13 @@ json.dump({
     'compile_command': test['compile_command'],
     'compiler': compiler,
 }, sys.stdout)
-" "$MOLD_TOML" "$WORK_DIR" 2>&1)
+" "$MOLD_TOML" "$WORK_DIR" 2>"${WORK_DIR}/parse_stderr")
 PARSE_EXIT=$?
 set -e
 
 if [[ "$PARSE_EXIT" -ne 0 ]]; then
-    echo "Error: Failed to parse test configuration: ${TEST_DATA}"
+    PARSE_ERROR=$(cat "${WORK_DIR}/parse_stderr")
+    echo "Error: Failed to parse test configuration: ${PARSE_ERROR}"
     exit 2
 fi
 
@@ -125,6 +132,16 @@ COMPILER_NAME=$(echo "$TEST_DATA" | jq -r '.compiler')
 
 if [[ -z "$COMPILE_CMD" || -z "$COMPILER_NAME" ]]; then
     echo "Error: Incomplete test configuration"
+    exit 2
+fi
+
+# Reject compiler names that could escape the bin/ directory
+if [[ "$COMPILER_NAME" == */* || "$COMPILER_NAME" == *..* ]]; then
+    echo "Error: Invalid compiler name (must not contain '/' or '..'): ${COMPILER_NAME}"
+    exit 2
+fi
+if ! [[ "$COMPILER_NAME" =~ ^[A-Za-z0-9._+-]+$ ]]; then
+    echo "Error: Invalid compiler name (unexpected characters): ${COMPILER_NAME}"
     exit 2
 fi
 
@@ -137,6 +154,14 @@ echo -e "${BOLD}2. Verify compiler${RESET}"
 COMPILER_PATH="${INGOT_ROOT}/bin/${COMPILER_NAME}"
 if [[ ! -x "$COMPILER_PATH" ]]; then
     fail_msg "Compiler not found or not executable: ${COMPILER_PATH}"
+    exit 1
+fi
+
+# Verify the resolved path is within the ingot bin/ directory
+COMPILER_REAL=$(cd "$(dirname "$COMPILER_PATH")" && pwd)/$(basename "$COMPILER_PATH")
+INGOT_BIN_REAL=$(cd "${INGOT_ROOT}/bin" && pwd)
+if [[ "$COMPILER_REAL" != "${INGOT_BIN_REAL}/"* ]]; then
+    fail_msg "Compiler path resolves outside ingot bin/: ${COMPILER_REAL}"
     exit 1
 fi
 
@@ -154,8 +179,13 @@ echo ""
 # --- Step 4: Compile ---
 echo -e "${BOLD}4. Compile${RESET}"
 
+# Use word splitting instead of eval to avoid command injection.
+# compile_command is expected to be a simple command with arguments
+# (e.g., "{compiler} -o hello hello.cpp"), not a shell expression.
+read -ra CMD_ARRAY <<< "$EXPANDED_CMD"
+
 set +e
-COMPILE_OUTPUT=$(cd "$WORK_DIR" && eval "$EXPANDED_CMD" 2>&1)
+COMPILE_OUTPUT=$(cd "$WORK_DIR" && "${CMD_ARRAY[@]}" 2>&1)
 COMPILE_EXIT=$?
 set -e
 
@@ -185,6 +215,8 @@ if command -v timeout &>/dev/null; then
     TIMEOUT_CMD="timeout"
 elif command -v gtimeout &>/dev/null; then
     TIMEOUT_CMD="gtimeout"
+else
+    warn "Neither 'timeout' nor 'gtimeout' found; running without timeout protection"
 fi
 
 set +e
@@ -197,7 +229,8 @@ else
 fi
 set -e
 
-if [[ "$RUN_EXIT" -eq 124 ]]; then
+# GNU coreutils timeout returns 124 when the command times out
+if [[ "$RUN_EXIT" -eq 124 && -n "$TIMEOUT_CMD" ]]; then
     fail_msg "Execution timed out after ${TIMEOUT} seconds"
     exit 1
 fi
