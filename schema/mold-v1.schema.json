@@ -249,11 +249,6 @@
           "items": { "type": "string" },
           "description": "Arguments for make step"
         },
-        "make_install_args": {
-          "type": "array",
-          "items": { "type": "string" },
-          "description": "Arguments for make install step"
-        },
         "prerequisites": {
           "type": "object",
           "additionalProperties": false,
