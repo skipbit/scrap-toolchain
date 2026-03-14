@@ -85,7 +85,7 @@ jobs:
         env:
           MOLD: ${{ matrix.mold }}
         run: |
-          if ! echo "$MOLD" | grep -qE '^molds/[a-z][a-z0-9-]*/[0-9a-zA-Z]'; then
+          if ! echo "$MOLD" | grep -qE '^molds/[a-z][a-z0-9-]*/[0-9a-zA-Z][0-9a-zA-Z._-]*$'; then
             echo "::error::Invalid mold path format: ${MOLD}"
             exit 1
           fi
@@ -221,9 +221,10 @@ jobs:
           PR_NUMBER: ${{ github.event.pull_request.number }}
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         run: |
-          gh pr comment "${PR_NUMBER}" \
-            --body "## Validation Failed: \`${MOLD}\`
+          BODY="## Validation Failed: \`${MOLD}\`
 
           The PR validation for \`${MOLD}\` has failed.
 
           See the [workflow run](${RUN_URL}) for details."
+
+          gh pr comment "${PR_NUMBER}" --body "${BODY}"
