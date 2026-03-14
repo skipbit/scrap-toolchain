@@ -1,0 +1,32 @@
+[platforms]
+schema_version = 1
+
+# === Tier 1: Official binaries & full support ===
+
+[[platforms.tier1]]
+platform = "linux"
+arch = "x86_64"
+runner = "ubuntu-24.04"
+container = "ubuntu:20.04"                # glibc 2.31 baseline
+description = "Linux x86_64 (glibc 2.31+)"
+
+[[platforms.tier1]]
+platform = "linux"
+arch = "aarch64"
+runner = "ubuntu-24.04-arm"
+container = "ubuntu:20.04"                # glibc 2.31 baseline
+description = "Linux aarch64 (glibc 2.31+)"
+
+[[platforms.tier1]]
+platform = "darwin"
+arch = "aarch64"
+runner = "macos-14"
+description = "macOS Apple Silicon"
+
+# === Tier 2: Source build only ===
+
+[[platforms.tier2]]
+platform = "darwin"
+arch = "x86_64"
+source_build_only = true
+description = "macOS Intel (source build only)"

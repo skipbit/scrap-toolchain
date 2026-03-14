@@ -1,0 +1,300 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/skipbit/scrap-toolchain/schema/mold-v1.schema.json",
+  "title": "mold.toml schema",
+  "description": "Schema for scrap-toolchain mold definitions (TOML converted to JSON)",
+  "type": "object",
+  "required": ["metadata", "source", "test"],
+  "additionalProperties": false,
+  "properties": {
+    "metadata": { "$ref": "#/$defs/metadata" },
+    "source": { "$ref": "#/$defs/source" },
+    "patches": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/patch" }
+    },
+    "test": { "$ref": "#/$defs/test" }
+  },
+  "allOf": [
+    { "$ref": "#/$defs/sourceFetchRequired" },
+    { "$ref": "#/$defs/sourceBuildRequired" }
+  ],
+  "$defs": {
+    "metadata": {
+      "type": "object",
+      "required": ["schema_version", "family", "version", "status", "license", "license_files", "components"],
+      "additionalProperties": false,
+      "properties": {
+        "schema_version": {
+          "type": "integer",
+          "const": 1,
+          "description": "Schema format version"
+        },
+        "family": {
+          "type": "string",
+          "pattern": "^[a-z][a-z0-9-]*$",
+          "description": "Toolchain family identifier (e.g., llvm, gcc)"
+        },
+        "version": {
+          "type": "string",
+          "description": "Toolchain version (e.g., 18.1.8)"
+        },
+        "status": {
+          "type": "string",
+          "enum": ["active", "deprecated", "disabled"],
+          "description": "Mold lifecycle status"
+        },
+        "license": {
+          "type": "string",
+          "description": "SPDX license identifier"
+        },
+        "homepage": {
+          "type": "string",
+          "format": "uri",
+          "description": "Upstream project URL"
+        },
+        "description": {
+          "type": "string",
+          "description": "Human-readable description of the toolchain"
+        },
+        "min_scrap_version": {
+          "type": "string",
+          "description": "Minimum scrap version required"
+        },
+        "license_files": {
+          "type": "array",
+          "items": { "type": "string" },
+          "minItems": 1,
+          "description": "License files to include in the ingot"
+        },
+        "components": { "$ref": "#/$defs/components" }
+      }
+    },
+    "components": {
+      "type": "object",
+      "required": ["compiler"],
+      "additionalProperties": false,
+      "properties": {
+        "compiler": {
+          "type": "string",
+          "description": "Compiler executable name (e.g., clang, g++)"
+        },
+        "linker": {
+          "type": "string",
+          "description": "Linker executable name"
+        },
+        "stdlib": {
+          "type": "string",
+          "description": "Standard library name"
+        }
+      }
+    },
+    "source": {
+      "type": "object",
+      "required": ["type"],
+      "additionalProperties": false,
+      "properties": {
+        "type": {
+          "type": "string",
+          "enum": ["fetch", "build"],
+          "description": "Source acquisition method"
+        },
+        "binaries": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/binary" },
+          "description": "Platform-specific prebuilt binary URLs (required for fetch type)"
+        },
+        "build_fallback": { "$ref": "#/$defs/buildFallback" },
+        "build": { "$ref": "#/$defs/buildDefinition" }
+      }
+    },
+    "sourceFetchRequired": {
+      "if": {
+        "properties": {
+          "source": {
+            "properties": { "type": { "const": "fetch" } },
+            "required": ["type"]
+          }
+        },
+        "required": ["source"]
+      },
+      "then": {
+        "properties": {
+          "source": {
+            "required": ["binaries"],
+            "properties": {
+              "binaries": { "minItems": 1 }
+            },
+            "not": { "required": ["build"] }
+          }
+        }
+      }
+    },
+    "sourceBuildRequired": {
+      "if": {
+        "properties": {
+          "source": {
+            "properties": { "type": { "const": "build" } },
+            "required": ["type"]
+          }
+        },
+        "required": ["source"]
+      },
+      "then": {
+        "properties": {
+          "source": {
+            "required": ["build"],
+            "not": {
+              "anyOf": [
+                { "required": ["binaries"] },
+                { "required": ["build_fallback"] }
+              ]
+            }
+          }
+        }
+      }
+    },
+    "binary": {
+      "type": "object",
+      "required": ["platform", "arch", "url", "sha256"],
+      "additionalProperties": false,
+      "properties": {
+        "platform": {
+          "type": "string",
+          "enum": ["linux", "darwin"],
+          "description": "Target platform"
+        },
+        "arch": {
+          "type": "string",
+          "enum": ["x86_64", "aarch64"],
+          "description": "Target architecture"
+        },
+        "url": {
+          "type": "string",
+          "format": "uri",
+          "description": "Download URL for the prebuilt binary archive"
+        },
+        "sha256": {
+          "type": "string",
+          "pattern": "^[a-f0-9]{64}$",
+          "description": "SHA-256 checksum of the archive"
+        },
+        "strip_components": {
+          "type": "integer",
+          "default": 1,
+          "minimum": 0,
+          "description": "Number of leading path components to strip on extraction"
+        },
+        "root_dir": {
+          "type": "string",
+          "description": "Root directory name inside the archive"
+        }
+      }
+    },
+    "buildFallback": {
+      "type": "object",
+      "required": ["enabled"],
+      "additionalProperties": false,
+      "properties": {
+        "enabled": {
+          "type": "boolean",
+          "description": "Whether source build fallback is enabled"
+        },
+        "source_url": {
+          "type": "string",
+          "format": "uri",
+          "description": "Source archive URL for fallback build"
+        },
+        "source_sha256": {
+          "type": "string",
+          "pattern": "^[a-f0-9]{64}$",
+          "description": "SHA-256 checksum of the source archive"
+        },
+        "cmake_args": {
+          "type": "array",
+          "items": { "type": "string" },
+          "description": "CMake arguments for the fallback build"
+        }
+      },
+      "if": {
+        "properties": { "enabled": { "const": true } },
+        "required": ["enabled"]
+      },
+      "then": {
+        "required": ["source_url", "source_sha256", "cmake_args"]
+      }
+    },
+    "buildDefinition": {
+      "type": "object",
+      "required": ["source_url", "source_sha256"],
+      "additionalProperties": false,
+      "properties": {
+        "source_url": {
+          "type": "string",
+          "format": "uri",
+          "description": "Source archive URL"
+        },
+        "source_sha256": {
+          "type": "string",
+          "pattern": "^[a-f0-9]{64}$",
+          "description": "SHA-256 checksum of the source archive"
+        },
+        "configure_args": {
+          "type": "array",
+          "items": { "type": "string" },
+          "description": "Arguments for configure step"
+        },
+        "make_args": {
+          "type": "array",
+          "items": { "type": "string" },
+          "description": "Arguments for make step"
+        },
+        "prerequisites": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "apt": {
+              "type": "array",
+              "items": { "type": "string" },
+              "description": "Required apt packages"
+            }
+          }
+        }
+      }
+    },
+    "patch": {
+      "type": "object",
+      "required": ["file", "description"],
+      "additionalProperties": false,
+      "properties": {
+        "file": {
+          "type": "string",
+          "description": "Path to the patch file relative to the mold directory"
+        },
+        "description": {
+          "type": "string",
+          "description": "Human-readable description of what the patch does"
+        }
+      }
+    },
+    "test": {
+      "type": "object",
+      "required": ["hello_world_source", "compile_command", "expected_output"],
+      "additionalProperties": false,
+      "properties": {
+        "hello_world_source": {
+          "type": "string",
+          "description": "Source code for the smoke test"
+        },
+        "compile_command": {
+          "type": "string",
+          "description": "Command to compile the test (use {compiler} placeholder)"
+        },
+        "expected_output": {
+          "type": "string",
+          "description": "Expected stdout from running the compiled test"
+        }
+      }
+    }
+  }
+}
