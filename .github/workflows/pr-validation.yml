@@ -1,0 +1,216 @@
+name: PR Validation
+
+on:
+  pull_request:
+    paths:
+      - 'molds/**'
+      - 'schema/**'
+      - 'scripts/**'
+      - 'platforms.toml'
+
+permissions:
+  contents: read
+  pull-requests: write
+
+concurrency:
+  group: pr-validation-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  detect-changes:
+    runs-on: ubuntu-24.04
+    outputs:
+      has_changes: ${{ steps.detect.outputs.has_changes }}
+      changed_molds: ${{ steps.detect.outputs.changed_molds }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Detect changed molds
+        id: detect
+        run: |
+          CHANGED_FILES=$(git diff --name-only "${{ github.event.pull_request.base.sha }}" "${{ github.sha }}")
+
+          # Check if infrastructure files changed (schema, scripts, platforms.toml)
+          INFRA_CHANGED=$(echo "$CHANGED_FILES" | grep -E '^(schema/|scripts/|platforms\.toml)' || true)
+
+          # Extract unique mold directories (molds/{family}/{version}) from changed files
+          MOLD_DIRS=$(echo "$CHANGED_FILES" \
+            | grep '^molds/' \
+            | sed 's|^\(molds/[^/]*/[^/]*\)/.*|\1|; s|^\(molds/[^/]*/[^/]*\)$|\1|' \
+            | sort -u || true)
+
+          # If infrastructure changed, validate all existing molds
+          if [[ -n "$INFRA_CHANGED" ]]; then
+            MOLD_DIRS=$(find molds -name "mold.toml" -not -path "*/\.*" 2>/dev/null \
+              | sed 's|/mold\.toml$||' | sort -u || true)
+          fi
+
+          # Filter to molds that exist (skip deleted molds)
+          VALID_MOLDS=()
+          while IFS= read -r mold; do
+            [[ -z "$mold" ]] && continue
+            [[ -f "${mold}/mold.toml" ]] && VALID_MOLDS+=("$mold")
+          done <<< "$MOLD_DIRS"
+
+          if [[ ${#VALID_MOLDS[@]} -eq 0 ]]; then
+            echo "has_changes=false" >> "$GITHUB_OUTPUT"
+            echo "changed_molds=[]" >> "$GITHUB_OUTPUT"
+            echo "No mold changes detected"
+          else
+            JSON=$(printf '%s\n' "${VALID_MOLDS[@]}" | jq -R -s -c 'split("\n") | map(select(. != ""))')
+            echo "has_changes=true" >> "$GITHUB_OUTPUT"
+            echo "changed_molds=${JSON}" >> "$GITHUB_OUTPUT"
+            echo "Detected molds: ${JSON}"
+          fi
+
+  validate:
+    needs: detect-changes
+    if: needs.detect-changes.outputs.has_changes == 'true' && needs.detect-changes.outputs.changed_molds != '[]'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    strategy:
+      matrix:
+        mold: ${{ fromJSON(needs.detect-changes.outputs.changed_molds) }}
+      fail-fast: false
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Validate mold path format
+        run: |
+          if ! echo "${{ matrix.mold }}" | grep -qE '^molds/[a-z][a-z0-9-]*/[0-9a-zA-Z]'; then
+            echo "::error::Invalid mold path format: ${{ matrix.mold }}"
+            exit 1
+          fi
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install validation tools
+        run: pip install jsonschema
+
+      - name: Validate mold definition
+        id: validate
+        run: |
+          chmod +x scripts/validate-mold.sh
+          scripts/validate-mold.sh "${{ matrix.mold }}"
+
+      - name: Determine source type
+        if: success()
+        id: source-type
+        run: |
+          SOURCE_TYPE=$(python3 -c "
+          import tomllib
+          with open('${{ matrix.mold }}/mold.toml', 'rb') as f:
+              data = tomllib.load(f)
+          print(data['source']['type'])
+          ")
+          echo "type=${SOURCE_TYPE}" >> "$GITHUB_OUTPUT"
+
+      # Light Build Verification (fetch type):
+      # Runs the full cast-ingot.sh flow (DL -> SHA256 -> layout -> smoke test)
+      # for linux-x86_64 only. Artifact files (tar.xz, metadata JSON) are generated
+      # as a side effect but not uploaded — the purpose is smoke test verification.
+      - name: Light Build Verification (fetch)
+        if: success() && steps.source-type.outputs.type == 'fetch'
+        env:
+          OUTPUT_DIR: ${{ runner.temp }}/lbv-output
+        run: |
+          chmod +x scripts/cast-ingot.sh scripts/smoke-test.sh
+          mkdir -p "${OUTPUT_DIR}"
+          scripts/cast-ingot.sh "${{ matrix.mold }}" linux x86_64
+
+      # Light Build Verification (build type):
+      # Downloads source, verifies SHA256, extracts, installs prerequisites,
+      # and runs configure only (no make/build). Smoke test is not executed
+      # because no compiled binary is produced at this stage.
+      - name: Light Build Verification (build - configure only)
+        if: success() && steps.source-type.outputs.type == 'build'
+        env:
+          MOLD_PATH: ${{ matrix.mold }}
+        run: |
+          MOLD_JSON=$(mktemp)
+          export MOLD_JSON
+
+          python3 << 'PYEOF'
+          import tomllib, json, os
+          mold_path = os.environ['MOLD_PATH']
+          mold_json = os.environ['MOLD_JSON']
+          with open(f'{mold_path}/mold.toml', 'rb') as f:
+              data = tomllib.load(f)
+          with open(mold_json, 'w') as out:
+              json.dump(data, out)
+          PYEOF
+
+          SOURCE_URL=$(jq -r '.source.build.source_url' "$MOLD_JSON")
+          SOURCE_SHA=$(jq -r '.source.build.source_sha256' "$MOLD_JSON")
+
+          # Install build prerequisites if specified
+          readarray -t APT_PACKAGES < <(jq -r '.source.build.prerequisites.apt // [] | .[]' "$MOLD_JSON")
+          if [[ ${#APT_PACKAGES[@]} -gt 0 ]]; then
+            sudo apt-get update -qq
+            sudo apt-get install -y -qq "${APT_PACKAGES[@]}"
+          fi
+
+          # Download source archive
+          WORK_DIR=$(mktemp -d)
+          trap 'rm -rf "${WORK_DIR}"' EXIT
+
+          echo "Downloading source archive..."
+          curl -fSL --max-time 600 --retry 3 -o "${WORK_DIR}/source.tar" "${SOURCE_URL}"
+
+          # Verify SHA256
+          ACTUAL_SHA=$(sha256sum "${WORK_DIR}/source.tar" | cut -d' ' -f1)
+          if [[ "${ACTUAL_SHA}" != "${SOURCE_SHA}" ]]; then
+            echo "::error::SHA256 mismatch: expected=${SOURCE_SHA} actual=${ACTUAL_SHA}"
+            exit 1
+          fi
+          echo "SHA256 verified"
+
+          # Extract source
+          mkdir -p "${WORK_DIR}/src"
+          tar -xf "${WORK_DIR}/source.tar" --strip-components=1 -C "${WORK_DIR}/src"
+
+          # Configure only (no build)
+          BUILD_DIR="${WORK_DIR}/build"
+          mkdir -p "${BUILD_DIR}"
+
+          readarray -t CONFIG_ARGS < <(jq -r '.source.build.configure_args // [] | .[]' "$MOLD_JSON")
+
+          if [[ -x "${WORK_DIR}/src/configure" ]]; then
+            cd "${BUILD_DIR}"
+            "${WORK_DIR}/src/configure" "${CONFIG_ARGS[@]}" "--prefix=${WORK_DIR}/install"
+          elif [[ -f "${WORK_DIR}/src/CMakeLists.txt" ]]; then
+            cmake -S "${WORK_DIR}/src" -B "${BUILD_DIR}" "${CONFIG_ARGS[@]}" "-DCMAKE_INSTALL_PREFIX=${WORK_DIR}/install"
+          else
+            echo "::error::No configure script or CMakeLists.txt found in source"
+            exit 1
+          fi
+
+          echo "Configure-only verification passed"
+
+          {
+            echo "### Light Build Verification (build type)"
+            echo ""
+            echo "- :white_check_mark: Source SHA256 verified"
+            echo "- :white_check_mark: Configure-only verification passed"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Post PR comment on failure
+        if: failure()
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          MOLD="${{ matrix.mold }}"
+          RUN_URL="${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+
+          gh pr comment "${{ github.event.pull_request.number }}" \
+            --body "## Validation Failed: \`${MOLD}\`
+
+          The PR validation for \`${MOLD}\` has failed.
+
+          See the [workflow run](${RUN_URL}) for details."
