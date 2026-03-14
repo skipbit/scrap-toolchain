@@ -53,6 +53,12 @@ compute_sha256() {
     fi
 }
 
+# Resolve a path to its canonical form (resolves symlinks).
+# Portable across Linux and macOS via Python.
+resolve_path() {
+    python3 -c "import os, sys; print(os.path.realpath(sys.argv[1]))" "$1"
+}
+
 _HTTP_CODE=""
 check_url() {
     local url="$1"
@@ -65,10 +71,10 @@ check_url() {
         if [[ "$_HTTP_CODE" =~ ^2 ]]; then
             return 0
         fi
-        # Fall back to GET if HEAD is rejected (405/403)
+        # Fall back to GET with minimal download if HEAD is rejected (405/403)
         if [[ "$_HTTP_CODE" == "405" || "$_HTTP_CODE" == "403" ]]; then
-            _HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" \
-                --max-time 30 --location "$url" 2>/dev/null || echo "000")
+            _HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" -r 0-0 \
+                --max-time 10 --location "$url" 2>/dev/null || echo "000")
             if [[ "$_HTTP_CODE" =~ ^2 ]]; then
                 return 0
             fi
@@ -212,6 +218,10 @@ elif [[ "$SCHEMA_EXIT" -ne 0 ]]; then
         fail "Schema validation error: ${SCHEMA_RESULT}${SCHEMA_STDERR:+ (${SCHEMA_STDERR})}"
         add_summary "- :x: Schema validation error"
     fi
+else
+    # SCHEMA_EXIT == 0 but output is not "OK" — unexpected state
+    fail "Schema validation returned unexpected output: ${SCHEMA_RESULT}"
+    add_summary "- :x: Schema validation: unexpected output"
 fi
 echo ""
 
@@ -320,7 +330,8 @@ if [[ "$SOURCE_TYPE" == "fetch" ]]; then
         info "Downloading ${VERIFY_LABEL} archive for verification..."
         DL_FILE="${TMPDIR_VALIDATE}/archive"
         set +e
-        curl -fsSL --max-time 300 --retry 3 -o "$DL_FILE" "$VERIFY_URL" 2>/dev/null
+        curl -fsL --max-time 300 --retry 3 -o "$DL_FILE" "$VERIFY_URL" \
+            2>"${TMPDIR_VALIDATE}/dl_stderr"
         DL_EXIT=$?
         set -e
         if [[ "$DL_EXIT" -eq 0 && -f "$DL_FILE" ]]; then
@@ -348,7 +359,8 @@ elif [[ "$SOURCE_TYPE" == "build" ]]; then
         info "Downloading source archive for verification..."
         DL_FILE="${TMPDIR_VALIDATE}/source"
         set +e
-        curl -fsSL --max-time 300 --retry 3 -o "$DL_FILE" "$BUILD_URL" 2>/dev/null
+        curl -fsL --max-time 300 --retry 3 -o "$DL_FILE" "$BUILD_URL" \
+            2>"${TMPDIR_VALIDATE}/dl_stderr"
         DL_EXIT=$?
         set -e
         if [[ "$DL_EXIT" -eq 0 && -f "$DL_FILE" ]]; then
@@ -381,12 +393,12 @@ if [[ "$PATCHES_COUNT" -eq 0 ]]; then
     add_summary "- :white_check_mark: Patches: none defined"
 else
     PATCH_FAILURES=0
-    # Resolve mold directory to absolute path for traversal check
-    MOLD_DIR_ABS=$(cd "$MOLD_DIR" && pwd)
+    # Resolve mold directory to canonical path for traversal check
+    MOLD_DIR_REAL=$(resolve_path "$MOLD_DIR")
     for idx in $(seq 0 $((PATCHES_COUNT - 1))); do
         PATCH_FILE=$(jq -r ".patches[$idx].file" "$MOLD_JSON_FILE")
-        # Reject absolute paths and path traversal
-        if [[ "$PATCH_FILE" == /* || "$PATCH_FILE" == *..* ]]; then
+        # Reject absolute paths and ".." as a path component
+        if [[ "$PATCH_FILE" == /* || "$PATCH_FILE" == ../* || "$PATCH_FILE" == */../* || "$PATCH_FILE" == */.. || "$PATCH_FILE" == .. ]]; then
             fail "Patch path contains traversal or is absolute: ${PATCH_FILE}"
             add_summary "- :x: Invalid patch path: ${PATCH_FILE}"
             PATCH_FAILURES=$((PATCH_FAILURES + 1))
@@ -394,9 +406,9 @@ else
         fi
         PATCH_PATH="${MOLD_DIR}/${PATCH_FILE}"
         if [[ -f "$PATCH_PATH" ]]; then
-            # Verify resolved path is within the mold directory
-            PATCH_REAL=$(cd "$(dirname "$PATCH_PATH")" && pwd)/$(basename "$PATCH_PATH")
-            if [[ "$PATCH_REAL" != "${MOLD_DIR_ABS}/"* ]]; then
+            # Verify canonical path is within the mold directory (catches symlink escapes)
+            PATCH_REAL=$(resolve_path "$PATCH_PATH")
+            if [[ "$PATCH_REAL" != "${MOLD_DIR_REAL}/"* ]]; then
                 fail "Patch path escapes mold directory: ${PATCH_FILE}"
                 add_summary "- :x: Patch escapes mold dir: ${PATCH_FILE}"
                 PATCH_FAILURES=$((PATCH_FAILURES + 1))

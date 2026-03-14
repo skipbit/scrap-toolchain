@@ -40,6 +40,12 @@ fail_msg() { echo -e "  ${RED}FAIL${RESET}: $1"; }
 warn() { echo -e "  ${YELLOW}WARN${RESET}: $1"; }
 info() { echo -e "  ${BOLD}INFO${RESET}: $1"; }
 
+# Resolve a path to its canonical form (resolves symlinks).
+# Portable across Linux and macOS via Python.
+resolve_path() {
+    python3 -c "import os, sys; print(os.path.realpath(sys.argv[1]))" "$1"
+}
+
 WORK_DIR=""
 cleanup() {
     if [[ -n "$WORK_DIR" && -d "$WORK_DIR" ]]; then
@@ -157,9 +163,9 @@ if [[ ! -x "$COMPILER_PATH" ]]; then
     exit 1
 fi
 
-# Verify the resolved path is within the ingot bin/ directory
-COMPILER_REAL=$(cd "$(dirname "$COMPILER_PATH")" && pwd)/$(basename "$COMPILER_PATH")
-INGOT_BIN_REAL=$(cd "${INGOT_ROOT}/bin" && pwd)
+# Verify the canonical path is within the ingot bin/ directory (catches symlink escapes)
+COMPILER_REAL=$(resolve_path "$COMPILER_PATH")
+INGOT_BIN_REAL=$(resolve_path "${INGOT_ROOT}/bin")
 if [[ "$COMPILER_REAL" != "${INGOT_BIN_REAL}/"* ]]; then
     fail_msg "Compiler path resolves outside ingot bin/: ${COMPILER_REAL}"
     exit 1
