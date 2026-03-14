@@ -28,5 +28,5 @@ description = "macOS Apple Silicon"
 [[platforms.tier2]]
 platform = "darwin"
 arch = "x86_64"
-runner = ""
+source_build_only = true
 description = "macOS Intel (source build only)"

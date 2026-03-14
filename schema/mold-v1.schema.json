@@ -124,7 +124,8 @@
             "required": ["binaries"],
             "properties": {
               "binaries": { "minItems": 1 }
-            }
+            },
+            "not": { "required": ["build"] }
           }
         }
       }
@@ -142,7 +143,13 @@
       "then": {
         "properties": {
           "source": {
-            "required": ["build"]
+            "required": ["build"],
+            "not": {
+              "anyOf": [
+                { "required": ["binaries"] },
+                { "required": ["build_fallback"] }
+              ]
+            }
           }
         }
       }
@@ -154,11 +161,13 @@
       "properties": {
         "platform": {
           "type": "string",
-          "description": "Target platform (e.g., linux, darwin)"
+          "enum": ["linux", "darwin"],
+          "description": "Target platform"
         },
         "arch": {
           "type": "string",
-          "description": "Target architecture (e.g., x86_64, aarch64)"
+          "enum": ["x86_64", "aarch64"],
+          "description": "Target architecture"
         },
         "url": {
           "type": "string",
@@ -184,7 +193,7 @@
     },
     "buildFallback": {
       "type": "object",
-      "required": ["enabled", "source_url", "source_sha256", "cmake_args"],
+      "required": ["enabled"],
       "additionalProperties": false,
       "properties": {
         "enabled": {
@@ -206,6 +215,13 @@
           "items": { "type": "string" },
           "description": "CMake arguments for the fallback build"
         }
+      },
+      "if": {
+        "properties": { "enabled": { "const": true } },
+        "required": ["enabled"]
+      },
+      "then": {
+        "required": ["source_url", "source_sha256", "cmake_args"]
       }
     },
     "buildDefinition": {

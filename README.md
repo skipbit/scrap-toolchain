@@ -17,7 +17,7 @@ scrap-toolchain/
 ├── scripts/                        # CI/CD helper scripts
 ├── .github/workflows/              # GitHub Actions workflows
 ├── platforms.toml                   # Platform matrix (Tier 1/2)
-├── index.toml                      # Auto-generated toolchain index
+├── index.toml                      # Auto-generated toolchain index (created after first CI run)
 └── README.md
 ```
 
