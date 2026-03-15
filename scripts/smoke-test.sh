@@ -192,6 +192,18 @@ echo ""
 # --- Step 4: Compile ---
 echo -e "${BOLD}4. Compile${RESET}"
 
+# On macOS, pre-built LLVM binaries need the SDK path to find system
+# headers (time.h, stdlib.h, etc.). Set SDKROOT if not already set.
+if [[ "$(uname -s)" == "Darwin" && -z "${SDKROOT:-}" ]]; then
+    if command -v xcrun &>/dev/null; then
+        SDKROOT=$(xcrun --show-sdk-path 2>/dev/null || true)
+        if [[ -n "$SDKROOT" ]]; then
+            export SDKROOT
+            info "SDKROOT=${SDKROOT}"
+        fi
+    fi
+fi
+
 # Use word splitting instead of eval to avoid command injection.
 # compile_command is expected to be a simple command with arguments
 # (e.g., "{compiler} -o hello hello.cpp"), not a shell expression.
