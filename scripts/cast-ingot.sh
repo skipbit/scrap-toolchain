@@ -90,8 +90,11 @@ if ! command -v sha256sum &>/dev/null && ! command -v shasum &>/dev/null; then
     exit 3
 fi
 
-if ! python3 -c "import tomllib" 2>/dev/null; then
-    echo "Error: Python 3.11+ with tomllib module is required"
+if ! python3 -c "try:
+    import tomllib
+except ImportError:
+    import tomli" 2>/dev/null; then
+    echo "Error: Python 3.11+ (tomllib) or tomli package is required"
     exit 3
 fi
 
@@ -123,7 +126,11 @@ MOLD_JSON="${RUN_DIR}/mold.json"
 
 set +e
 python3 -c "
-import tomllib, json, sys
+try:
+    import tomllib
+except ImportError:
+    import tomli as tomllib
+import json, sys
 with open(sys.argv[1], 'rb') as f:
     data = tomllib.load(f)
 with open(sys.argv[2], 'w') as out:
