@@ -513,6 +513,7 @@ if [[ "${SKIP_PACKAGE:-0}" == "1" ]]; then
     echo ""
 
     INGOT_FILE="${FAMILY}-${VERSION}-${PLATFORM}-${ARCH}.tar.xz"
+    INGOT_PATH="(skipped)"
     INGOT_SHA256="skipped"
 else
     echo -e "${BOLD}11. Create tar.xz archive${RESET}"
