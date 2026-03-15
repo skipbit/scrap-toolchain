@@ -500,9 +500,10 @@ pass "Generated metadata.toml"
 echo ""
 
 # --- Step 11: Create tar.xz archive ---
-# SKIP_PACKAGE=1 skips archive creation and checksum generation (steps 11-12).
-# Used by Light Build Verification in pr-validation.yml where the purpose is
+# SKIP_PACKAGE=1 skips archive creation, checksum, and metadata JSON (steps 11-12, 14).
+# Used ONLY by Light Build Verification in pr-validation.yml where the purpose is
 # smoke test verification, not artifact production.
+# WARNING: Do NOT set SKIP_PACKAGE in ingot-cast.yml or any production workflow.
 if [[ "${SKIP_PACKAGE:-0}" == "1" ]]; then
     echo -e "${BOLD}11. Create tar.xz archive${RESET}"
     info "Skipped (SKIP_PACKAGE=1)"
@@ -563,48 +564,65 @@ pass "Smoke test passed"
 echo ""
 
 # --- Step 14: Generate ingot-metadata JSON ---
-echo -e "${BOLD}14. Generate ingot-metadata JSON${RESET}"
+if [[ "${SKIP_PACKAGE:-0}" == "1" ]]; then
+    echo -e "${BOLD}14. Generate ingot-metadata JSON${RESET}"
+    info "Skipped (SKIP_PACKAGE=1)"
+    echo ""
 
-METADATA_JSON="${OUTPUT_DIR}/ingot-metadata-${FAMILY}-${VERSION}-${PLATFORM}-${ARCH}.json"
+    METADATA_JSON="(skipped)"
+else
+    echo -e "${BOLD}14. Generate ingot-metadata JSON${RESET}"
 
-jq -n \
-    --arg family "$FAMILY" \
-    --arg version "$VERSION" \
-    --arg platform "$PLATFORM" \
-    --arg arch "$ARCH" \
-    --arg ingot_file "$INGOT_FILE" \
-    --arg sha256 "$INGOT_SHA256" \
-    --arg source_type "fetch" \
-    --arg glibc_version "$GLIBC_VERSION" \
-    --arg built_at "$BUILT_AT" \
-    '{
-        family: $family,
-        version: $version,
-        platform: $platform,
-        arch: $arch,
-        ingot_file: $ingot_file,
-        sha256: $sha256,
-        source_type: $source_type,
-        built_at: $built_at
-    } + if $glibc_version != "" then {glibc_version: $glibc_version} else {} end' \
-    > "$METADATA_JSON"
+    METADATA_JSON="${OUTPUT_DIR}/ingot-metadata-${FAMILY}-${VERSION}-${PLATFORM}-${ARCH}.json"
 
-pass "Generated: $(basename "$METADATA_JSON")"
-echo ""
+    jq -n \
+        --arg family "$FAMILY" \
+        --arg version "$VERSION" \
+        --arg platform "$PLATFORM" \
+        --arg arch "$ARCH" \
+        --arg ingot_file "$INGOT_FILE" \
+        --arg sha256 "$INGOT_SHA256" \
+        --arg source_type "fetch" \
+        --arg glibc_version "$GLIBC_VERSION" \
+        --arg built_at "$BUILT_AT" \
+        '{
+            family: $family,
+            version: $version,
+            platform: $platform,
+            arch: $arch,
+            ingot_file: $ingot_file,
+            sha256: $sha256,
+            source_type: $source_type,
+            built_at: $built_at
+        } + if $glibc_version != "" then {glibc_version: $glibc_version} else {} end' \
+        > "$METADATA_JSON"
+
+    pass "Generated: $(basename "$METADATA_JSON")"
+    echo ""
+fi
 
 # --- Summary ---
 echo -e "${BOLD}Summary${RESET}"
-echo -e "  ${GREEN}Ingot built successfully.${RESET}"
-echo -e "  Artifacts:"
-echo -e "    ${INGOT_PATH}"
-echo -e "    ${INGOT_PATH}.sha256"
-echo -e "    ${METADATA_JSON}"
+if [[ "${SKIP_PACKAGE:-0}" == "1" ]]; then
+    echo -e "  ${GREEN}Smoke test passed (LBV mode — packaging skipped).${RESET}"
+    add_summary ""
+    add_summary "- :white_check_mark: Smoke test passed (LBV mode)"
+    add_summary ""
+    add_summary "**Result: :white_check_mark: Light Build Verification passed**"
+else
+    echo -e "  ${GREEN}Ingot built successfully.${RESET}"
+    echo -e "  Artifacts:"
+    echo -e "    ${INGOT_PATH}"
+    echo -e "    ${INGOT_PATH}.sha256"
+    echo -e "    ${METADATA_JSON}"
 
-add_summary ""
-add_summary "- :white_check_mark: Ingot: ${INGOT_FILE}"
-add_summary "- :white_check_mark: SHA256: ${INGOT_SHA256}"
-add_summary "- :white_check_mark: Smoke test passed"
-add_summary ""
+    add_summary ""
+    add_summary "- :white_check_mark: Ingot: ${INGOT_FILE}"
+    add_summary "- :white_check_mark: SHA256: ${INGOT_SHA256}"
+    add_summary "- :white_check_mark: Smoke test passed"
+    add_summary ""
+    add_summary "**Result: :white_check_mark: Ingot built successfully**"
+fi
 add_summary "**Result: :white_check_mark: Ingot built successfully**"
 
 if [[ -n "${GITHUB_STEP_SUMMARY:-}" ]]; then
