@@ -529,7 +529,9 @@ else
     INGOT_FILE="${FAMILY}-${VERSION}-${PLATFORM}-${ARCH}.tar.xz"
     INGOT_PATH="${OUTPUT_DIR}/${INGOT_FILE}"
 
-    tar -cJf "$INGOT_PATH" -C "$STAGING_DIR" .
+    # Use multi-threaded xz compression (-T0 = all available cores) to avoid
+    # timeouts on large toolchains (e.g., LLVM ~5GB takes 30+ min single-threaded).
+    tar -cf - -C "$STAGING_DIR" . | xz -T0 > "$INGOT_PATH"
 
     INGOT_SIZE=$(wc -c < "$INGOT_PATH" | tr -d ' ')
     pass "Created ${INGOT_FILE} (${INGOT_SIZE} bytes)"

@@ -229,7 +229,7 @@ jobs:
     if: needs.detect-build-targets.outputs.has_fetch_targets == 'true'
     runs-on: ${{ matrix.runner }}
     container: ${{ matrix.container || '' }}
-    timeout-minutes: 30
+    timeout-minutes: 60
     strategy:
       matrix: ${{ fromJSON(needs.detect-build-targets.outputs.fetch_matrix) }}
       fail-fast: false
