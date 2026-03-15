@@ -500,25 +500,41 @@ pass "Generated metadata.toml"
 echo ""
 
 # --- Step 11: Create tar.xz archive ---
-echo -e "${BOLD}11. Create tar.xz archive${RESET}"
+# SKIP_PACKAGE=1 skips archive creation and checksum generation (steps 11-12).
+# Used by Light Build Verification in pr-validation.yml where the purpose is
+# smoke test verification, not artifact production.
+if [[ "${SKIP_PACKAGE:-0}" == "1" ]]; then
+    echo -e "${BOLD}11. Create tar.xz archive${RESET}"
+    info "Skipped (SKIP_PACKAGE=1)"
+    echo ""
 
-INGOT_FILE="${FAMILY}-${VERSION}-${PLATFORM}-${ARCH}.tar.xz"
-INGOT_PATH="${OUTPUT_DIR}/${INGOT_FILE}"
+    echo -e "${BOLD}12. Generate SHA256 checksum${RESET}"
+    info "Skipped (SKIP_PACKAGE=1)"
+    echo ""
 
-tar -cJf "$INGOT_PATH" -C "$STAGING_DIR" .
+    INGOT_FILE="${FAMILY}-${VERSION}-${PLATFORM}-${ARCH}.tar.xz"
+    INGOT_SHA256="skipped"
+else
+    echo -e "${BOLD}11. Create tar.xz archive${RESET}"
 
-INGOT_SIZE=$(wc -c < "$INGOT_PATH" | tr -d ' ')
-pass "Created ${INGOT_FILE} (${INGOT_SIZE} bytes)"
-echo ""
+    INGOT_FILE="${FAMILY}-${VERSION}-${PLATFORM}-${ARCH}.tar.xz"
+    INGOT_PATH="${OUTPUT_DIR}/${INGOT_FILE}"
 
-# --- Step 12: Generate SHA256 checksum ---
-echo -e "${BOLD}12. Generate SHA256 checksum${RESET}"
+    tar -cJf "$INGOT_PATH" -C "$STAGING_DIR" .
 
-INGOT_SHA256=$(compute_sha256 "$INGOT_PATH")
-echo "$INGOT_SHA256" > "${INGOT_PATH}.sha256"
+    INGOT_SIZE=$(wc -c < "$INGOT_PATH" | tr -d ' ')
+    pass "Created ${INGOT_FILE} (${INGOT_SIZE} bytes)"
+    echo ""
 
-pass "SHA256: ${INGOT_SHA256}"
-echo ""
+    # --- Step 12: Generate SHA256 checksum ---
+    echo -e "${BOLD}12. Generate SHA256 checksum${RESET}"
+
+    INGOT_SHA256=$(compute_sha256 "$INGOT_PATH")
+    echo "$INGOT_SHA256" > "${INGOT_PATH}.sha256"
+
+    pass "SHA256: ${INGOT_SHA256}"
+    echo ""
+fi
 
 # --- Step 13: Smoke test ---
 echo -e "${BOLD}13. Smoke test${RESET}"
