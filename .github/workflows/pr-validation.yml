@@ -122,14 +122,15 @@ jobs:
           echo "type=${SOURCE_TYPE}" >> "$GITHUB_OUTPUT"
 
       # Light Build Verification (fetch type):
-      # Runs the full cast-ingot.sh flow (DL -> SHA256 -> layout -> smoke test)
-      # for linux-x86_64 only. Artifact files (tar.xz, metadata JSON) are generated
-      # as a side effect but not uploaded — the purpose is smoke test verification.
+      # Runs cast-ingot.sh with SKIP_PACKAGE=1 to skip tar.xz creation
+      # (which is extremely slow for large toolchains like LLVM ~5GB).
+      # The purpose is smoke test verification, not artifact production.
       - name: Light Build Verification (fetch)
         if: success() && steps.source-type.outputs.type == 'fetch'
         env:
           MOLD: ${{ matrix.mold }}
           OUTPUT_DIR: ${{ runner.temp }}/lbv-output
+          SKIP_PACKAGE: "1"
         run: |
           chmod +x scripts/cast-ingot.sh scripts/smoke-test.sh
           mkdir -p "${OUTPUT_DIR}"
