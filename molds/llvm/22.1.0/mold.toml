@@ -41,5 +41,5 @@ int main() {
     return 0;
 }
 """
-compile_command = "{compiler}++ -std=c++23 -o hello hello.cpp"
+compile_command = "{compiler}++ -std=c++23 -fuse-ld=lld -o hello hello.cpp"
 expected_output = "Hello, scrap!\n"
