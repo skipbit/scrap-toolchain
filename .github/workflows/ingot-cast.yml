@@ -241,18 +241,22 @@ jobs:
         run: |
           apt-get update -qq
           apt-get install -y -qq \
-            ca-certificates curl jq xz-utils patch file binutils \
-            software-properties-common
-          add-apt-repository -y ppa:deadsnakes/ppa
-          apt-get update -qq
-          apt-get install -y -qq python3.12
-          update-alternatives --install /usr/bin/python3 python3 /usr/bin/python3.12 1
+            ca-certificates curl jq xz-utils patch file binutils
 
       - name: Set up Python
-        if: ${{ !matrix.container }}
         uses: actions/setup-python@v5
         with:
           python-version: '3.12'
+
+      # In container environments, setup-python installs Python to the tool
+      # cache but the system python3 still points to the container's default
+      # (e.g., 3.8 on ubuntu:20.04). Create a symlink so scripts find 3.12.
+      - name: Link setup-python to system path (container)
+        if: matrix.container
+        run: |
+          if [ -x "${pythonLocation}/bin/python3.12" ]; then
+            ln -sf "${pythonLocation}/bin/python3.12" /usr/local/bin/python3
+          fi
 
       - name: Build ingot
         env:
