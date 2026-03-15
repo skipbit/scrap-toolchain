@@ -1,0 +1,526 @@
+name: Ingot Cast
+
+on:
+  push:
+    branches: [main]
+    paths: ['molds/**']
+  workflow_dispatch:
+    inputs:
+      mold_path:
+        description: 'Mold path to build (e.g., molds/llvm/18.1.8)'
+        required: true
+        type: string
+
+permissions:
+  contents: write
+
+jobs:
+  detect-build-targets:
+    runs-on: ubuntu-24.04
+    outputs:
+      has_fetch_targets: ${{ steps.detect.outputs.has_fetch_targets }}
+      has_build_targets: ${{ steps.detect.outputs.has_build_targets }}
+      fetch_matrix: ${{ steps.detect.outputs.fetch_matrix }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Detect build targets
+        id: detect
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          BEFORE_SHA: ${{ github.event.before }}
+          CURRENT_SHA: ${{ github.sha }}
+          MOLD_PATH_INPUT: ${{ inputs.mold_path }}
+        run: |
+          set -euo pipefail
+
+          no_targets() {
+            {
+              echo "has_fetch_targets=false"
+              echo "has_build_targets=false"
+              echo 'fetch_matrix={"include":[]}'
+            } >> "$GITHUB_OUTPUT"
+          }
+
+          # === Step 1: Identify changed molds ===
+
+          if [[ "$EVENT_NAME" == "workflow_dispatch" ]]; then
+            # workflow_dispatch: use mold_path directly (bypass DD-07)
+            MOLD_PATH="${MOLD_PATH_INPUT%/}"
+            if ! [[ "$MOLD_PATH" =~ ^molds/[a-zA-Z0-9._-]+/[a-zA-Z0-9._-]+$ ]]; then
+              echo "::error::Invalid mold path format: ${MOLD_PATH}"
+              exit 1
+            fi
+            if [[ ! -f "${MOLD_PATH}/mold.toml" ]]; then
+              echo "::error::Mold not found: ${MOLD_PATH}"
+              exit 1
+            fi
+            CHANGED_MOLDS=("$MOLD_PATH")
+          else
+            # Push event: detect changes via git diff (DD-07)
+            # Guard against null SHA on initial push
+            NULL_SHA="0000000000000000000000000000000000000000"
+            if [[ "$BEFORE_SHA" == "$NULL_SHA" ]]; then
+              CHANGED_FILES=$(git ls-tree -r --name-only HEAD -- molds/)
+            else
+              CHANGED_FILES=$(git diff --name-only "${BEFORE_SHA}..${CURRENT_SHA}" -- molds/ || true)
+            fi
+
+            if [[ -z "$CHANGED_FILES" ]]; then
+              echo "No mold changes detected"
+              no_targets
+              exit 0
+            fi
+
+            # Extract unique mold directories (molds/{family}/{version})
+            MOLD_DIRS=$(echo "$CHANGED_FILES" \
+              | sed 's|^\(molds/[^/]*/[^/]*\)/.*|\1|; s|^\(molds/[^/]*/[^/]*\)$|\1|' \
+              | sort -u)
+
+            # Write source-change-detection script to a temp file
+            CHECK_SCRIPT=$(mktemp)
+            trap 'rm -f "$CHECK_SCRIPT"' EXIT
+            cat > "$CHECK_SCRIPT" << 'CHECKEOF'
+          import tomllib, subprocess, sys, os
+
+          mold_dir = os.environ['MOLD_DIR_VAR']
+          before_sha = os.environ['BEFORE_SHA_VAR']
+
+          result = subprocess.run(
+              ['git', 'show', f'{before_sha}:{mold_dir}/mold.toml'],
+              capture_output=True, text=True
+          )
+          if result.returncode != 0:
+              print('true')
+              sys.exit(0)
+
+          old = tomllib.loads(result.stdout)
+          with open(f'{mold_dir}/mold.toml', 'rb') as f:
+              new = tomllib.load(f)
+
+          if (old.get('source') != new.get('source')
+              or old.get('test') != new.get('test')
+              or old.get('patches') != new.get('patches')):
+              print('true')
+          else:
+              print('false')
+          CHECKEOF
+
+            # DD-07: Filter to molds with source/patches changes only
+            CHANGED_MOLDS=()
+            while IFS= read -r mold_dir; do
+              [[ -z "$mold_dir" ]] && continue
+              [[ ! -f "${mold_dir}/mold.toml" ]] && continue
+
+              NEEDS_BUILD=false
+
+              # Check if patches/ changed
+              if echo "$CHANGED_FILES" | grep -q "^${mold_dir}/patches/"; then
+                NEEDS_BUILD=true
+              fi
+
+              # Check if mold.toml changed and source/test sections differ
+              if echo "$CHANGED_FILES" | grep -q "^${mold_dir}/mold.toml$"; then
+                if [[ "$BEFORE_SHA" == "$NULL_SHA" ]]; then
+                  NEEDS_BUILD=true
+                else
+                  SOURCE_CHANGED=$(MOLD_DIR_VAR="$mold_dir" BEFORE_SHA_VAR="$BEFORE_SHA" python3 "$CHECK_SCRIPT")
+                  if [[ "$SOURCE_CHANGED" == "true" ]]; then
+                    NEEDS_BUILD=true
+                  fi
+                fi
+              fi
+
+              if [[ "$NEEDS_BUILD" == "true" ]]; then
+                CHANGED_MOLDS+=("$mold_dir")
+              else
+                echo "Skipping ${mold_dir}: no source/patches changes (DD-07)"
+              fi
+            done <<< "$MOLD_DIRS"
+          fi
+
+          if [[ ${#CHANGED_MOLDS[@]} -eq 0 ]]; then
+            echo "No build targets detected"
+            no_targets
+            exit 0
+          fi
+
+          # === Step 2: Classify by source type and build platform matrix ===
+
+          FETCH_ENTRIES=()
+          HAS_FETCH=false
+          HAS_BUILD=false
+
+          # Read Tier 1 platforms from platforms.toml
+          TIER1_PLATFORMS=$(python3 -c "
+          import tomllib, json
+          with open('platforms.toml', 'rb') as f:
+              data = tomllib.load(f)
+          for p in data['platforms']['tier1']:
+              print(json.dumps(p))
+          ")
+
+          for mold in "${CHANGED_MOLDS[@]}"; do
+            MOLD_INFO=$(MOLD_VAR="$mold" python3 -c "
+          import tomllib, json, os
+          mold = os.environ['MOLD_VAR']
+          with open(f'{mold}/mold.toml', 'rb') as f:
+              data = tomllib.load(f)
+          print(json.dumps({
+              'source_type': data['source']['type'],
+              'family': data['metadata']['family'],
+              'version': data['metadata']['version']
+          }))
+          ")
+            SOURCE_TYPE=$(echo "$MOLD_INFO" | jq -r '.source_type')
+            FAMILY=$(echo "$MOLD_INFO" | jq -r '.family')
+            VERSION=$(echo "$MOLD_INFO" | jq -r '.version')
+
+            echo "Detected: ${mold} (${SOURCE_TYPE})"
+
+            if [[ "$SOURCE_TYPE" == "fetch" ]]; then
+              HAS_FETCH=true
+              while IFS= read -r platform_entry; do
+                [[ -z "$platform_entry" ]] && continue
+                PLAT=$(echo "$platform_entry" | jq -r '.platform')
+                ARCH=$(echo "$platform_entry" | jq -r '.arch')
+                RUNNER=$(echo "$platform_entry" | jq -r '.runner')
+                CONTAINER=$(echo "$platform_entry" | jq -r '.container // ""')
+
+                ENTRY=$(jq -n \
+                  --arg mold "$mold" \
+                  --arg family "$FAMILY" \
+                  --arg version "$VERSION" \
+                  --arg platform "$PLAT" \
+                  --arg arch "$ARCH" \
+                  --arg runner "$RUNNER" \
+                  --arg container "$CONTAINER" \
+                  '{mold: $mold, family: $family, version: $version,
+                    platform: $platform, arch: $arch,
+                    runner: $runner, container: $container}')
+                FETCH_ENTRIES+=("$ENTRY")
+              done <<< "$TIER1_PLATFORMS"
+            elif [[ "$SOURCE_TYPE" == "build" ]]; then
+              HAS_BUILD=true
+              echo "::notice::Build type detected: ${mold} (deferred to TSK-0003)"
+            fi
+          done
+
+          echo "has_fetch_targets=${HAS_FETCH}" >> "$GITHUB_OUTPUT"
+          echo "has_build_targets=${HAS_BUILD}" >> "$GITHUB_OUTPUT"
+
+          if [[ "$HAS_FETCH" == "true" ]]; then
+            FETCH_MATRIX=$(printf '%s\n' "${FETCH_ENTRIES[@]}" | jq -cs '{include: .}')
+          else
+            FETCH_MATRIX='{"include":[]}'
+          fi
+          echo "fetch_matrix=${FETCH_MATRIX}" >> "$GITHUB_OUTPUT"
+          echo "Fetch matrix: ${FETCH_MATRIX}"
+
+  cast-fetch:
+    needs: detect-build-targets
+    if: needs.detect-build-targets.outputs.has_fetch_targets == 'true'
+    runs-on: ${{ matrix.runner }}
+    container: ${{ matrix.container || '' }}
+    timeout-minutes: 30
+    strategy:
+      matrix: ${{ fromJSON(needs.detect-build-targets.outputs.fetch_matrix) }}
+      fail-fast: false
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install system prerequisites (Linux container)
+        if: matrix.container
+        run: |
+          apt-get update -qq
+          apt-get install -y -qq \
+            ca-certificates curl jq xz-utils patch file binutils
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Build ingot
+        env:
+          OUTPUT_DIR: ./output
+          MOLD: ${{ matrix.mold }}
+          PLATFORM: ${{ matrix.platform }}
+          ARCH: ${{ matrix.arch }}
+        run: |
+          chmod +x scripts/cast-ingot.sh scripts/smoke-test.sh
+          mkdir -p "${OUTPUT_DIR}"
+          scripts/cast-ingot.sh "$MOLD" "$PLATFORM" "$ARCH"
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: ingot-${{ matrix.family }}-${{ matrix.version }}-${{ matrix.platform }}-${{ matrix.arch }}
+          path: |
+            output/*.tar.xz
+            output/*.tar.xz.sha256
+            output/ingot-metadata-*.json
+          retention-days: 3
+
+  # upload-release: Consolidate artifacts and publish to GitHub Releases.
+  #
+  # Design intent (DSN-0004 DD-10):
+  #   needs does NOT include intermediate build stages (cast-build-configure,
+  #   cast-build-make). Their failure cascades via GHA defaults to skip
+  #   cast-build-package. Including them in needs would block fetch-type
+  #   releases on build-type failures, breaking per-mold independence.
+  #   Partial release prevention is handled by per-mold completeness checks
+  #   within this job's steps.
+  #
+  # Phase 006 scope: fetch type only. cast-build-package is added by TSK-0003.
+  upload-release:
+    needs: [detect-build-targets, cast-fetch]
+    if: |
+      needs.detect-build-targets.outputs.has_fetch_targets == 'true'
+      && !contains(needs.*.result, 'failure')
+      && !contains(needs.*.result, 'cancelled')
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts/
+          pattern: ingot-*
+
+      - name: Process releases
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+
+          MANIFEST_DIR="release-manifests"
+          mkdir -p "$MANIFEST_DIR"
+
+          # Collect all ingot-metadata JSON files
+          mapfile -t METADATA_FILES < <(find artifacts/ -name 'ingot-metadata-*.json' -type f | sort)
+
+          if [[ ${#METADATA_FILES[@]} -eq 0 ]]; then
+            echo "::error::No ingot metadata files found"
+            exit 1
+          fi
+
+          # Group metadata by family-version using associative arrays
+          declare -A MOLD_META_FILES
+
+          for meta_file in "${METADATA_FILES[@]}"; do
+            FAMILY=$(jq -r '.family' "$meta_file")
+            VERSION=$(jq -r '.version' "$meta_file")
+            KEY="${FAMILY}/${VERSION}"
+            MOLD_META_FILES["$KEY"]+="${meta_file} "
+          done
+
+          # Read Tier 1 platform count for completeness check
+          TIER1_COUNT=$(python3 -c "
+          import tomllib
+          with open('platforms.toml', 'rb') as f:
+              data = tomllib.load(f)
+          print(len(data['platforms']['tier1']))
+          ")
+
+          RELEASE_COUNT=0
+          FAILURE_COUNT=0
+
+          for key in "${!MOLD_META_FILES[@]}"; do
+            read -ra META_LIST <<< "${MOLD_META_FILES[$key]}"
+            PLATFORM_COUNT=${#META_LIST[@]}
+
+            echo ""
+            echo "=== Processing: ${key} (${PLATFORM_COUNT}/${TIER1_COUNT} platforms) ==="
+
+            # Per-mold completeness check (DD-10)
+            if [[ "$PLATFORM_COUNT" -lt "$TIER1_COUNT" ]]; then
+              echo "::warning::Skipping ${key}: only ${PLATFORM_COUNT}/${TIER1_COUNT} platforms (DD-10)"
+              continue
+            fi
+
+            # Extract family and version from first metadata file
+            FIRST_META="${META_LIST[0]}"
+            FAMILY=$(jq -r '.family' "$FIRST_META")
+            VERSION=$(jq -r '.version' "$FIRST_META")
+
+            # === Determine revision tag (ADR-0025) ===
+            BASE_TAG="${FAMILY}-${VERSION}"
+            EXISTING_TAGS=$(gh release list --limit 1000 --json tagName --jq '.[].tagName' 2>/dev/null \
+              | grep -xE "${BASE_TAG}(-r[0-9]+)?" || true)
+
+            if [[ -z "$EXISTING_TAGS" ]]; then
+              # First build: use base tag
+              RELEASE_TAG="${BASE_TAG}"
+            else
+              # Find max revision number (base tag = implicit r1)
+              MAX_REV=1
+              while IFS= read -r tag; do
+                [[ -z "$tag" ]] && continue
+                if [[ "$tag" == "${BASE_TAG}-r"* ]]; then
+                  REV="${tag#"${BASE_TAG}-r"}"
+                  if [[ "$REV" =~ ^[0-9]+$ && "$REV" -gt "$MAX_REV" ]]; then
+                    MAX_REV="$REV"
+                  fi
+                fi
+              done <<< "$EXISTING_TAGS"
+              NEXT_REV=$((MAX_REV + 1))
+              RELEASE_TAG="${BASE_TAG}-r${NEXT_REV}"
+            fi
+
+            echo "Release tag: ${RELEASE_TAG}"
+
+            # === Collect asset files ===
+            ASSET_FILES=()
+            ASSET_ENTRIES=()
+            PLATFORMS_LIST=()
+
+            for meta_file in "${META_LIST[@]}"; do
+              INGOT_FILE=$(jq -r '.ingot_file' "$meta_file")
+              PLATFORM=$(jq -r '.platform' "$meta_file")
+              ARCH=$(jq -r '.arch' "$meta_file")
+
+              # Find ingot and sha256 files in artifacts/
+              INGOT_PATH=$(find artifacts/ -name "${INGOT_FILE}" -type f | head -1)
+              SHA256_PATH=$(find artifacts/ -name "${INGOT_FILE}.sha256" -type f | head -1)
+
+              if [[ -z "$INGOT_PATH" || ! -f "$INGOT_PATH" ]]; then
+                echo "::warning::Ingot file not found: ${INGOT_FILE}"
+                continue
+              fi
+
+              ASSET_FILES+=("${INGOT_PATH}")
+              [[ -n "$SHA256_PATH" && -f "$SHA256_PATH" ]] && ASSET_FILES+=("${SHA256_PATH}")
+
+              ENTRY=$(jq -n \
+                --arg ingot_file "$INGOT_FILE" \
+                --arg platform "$PLATFORM" \
+                --arg arch "$ARCH" \
+                '{ingot_file: $ingot_file, platform: $platform, arch: $arch}')
+              ASSET_ENTRIES+=("$ENTRY")
+              PLATFORMS_LIST+=("${PLATFORM}-${ARCH}")
+            done
+
+            if [[ ${#ASSET_FILES[@]} -eq 0 ]]; then
+              echo "::warning::No asset files found for ${key}"
+              continue
+            fi
+
+            # === Build release notes ===
+            MOLD_DIR="molds/${FAMILY}/${VERSION}"
+            SOURCE_TYPE=$(jq -r '.source_type' "$FIRST_META")
+
+            NOTES_FILE=$(mktemp)
+            {
+              echo "## ${FAMILY} ${VERSION}"
+              echo ""
+              echo "### Platforms"
+              for p in "${PLATFORMS_LIST[@]}"; do
+                echo "- ${p}"
+              done
+              echo ""
+              echo "### Build Information"
+              echo ""
+              echo "- Source type: ${SOURCE_TYPE}"
+              echo "- Mold definition: [\`${MOLD_DIR}/mold.toml\`](${MOLD_DIR}/mold.toml)"
+              echo "- Build script: [\`scripts/cast-ingot.sh\`](scripts/cast-ingot.sh)"
+
+              # Source URLs and license info from mold.toml
+              if [[ -f "${MOLD_DIR}/mold.toml" ]]; then
+                echo ""
+                echo "### Source"
+                echo ""
+                MOLD_DIR_VAR="$MOLD_DIR" python3 -c "
+          import tomllib, os
+          mold_dir = os.environ['MOLD_DIR_VAR']
+          with open(f'{mold_dir}/mold.toml', 'rb') as f:
+              data = tomllib.load(f)
+          source = data.get('source', {})
+          if source.get('type') == 'fetch':
+              for b in source.get('binaries', []):
+                  print(f\"- {b['platform']}-{b['arch']}: \`{b['url']}\`\")
+          elif source.get('type') == 'build':
+              build = source.get('build', {})
+              if 'source_url' in build:
+                  print(f\"- Source: \`{build['source_url']}\`\")
+          "
+
+                echo ""
+                echo "### License"
+                echo ""
+                MOLD_DIR_VAR="$MOLD_DIR" python3 -c "
+          import tomllib, os
+          mold_dir = os.environ['MOLD_DIR_VAR']
+          with open(f'{mold_dir}/mold.toml', 'rb') as f:
+              data = tomllib.load(f)
+          meta = data.get('metadata', {})
+          print(f\"- {meta.get('license', 'Unknown')}\")
+          for lf in meta.get('license_files', []):
+              print(f\"- Included: \`{lf}\`\")
+          "
+              fi
+            } > "$NOTES_FILE"
+
+            # === Create GitHub Release ===
+            set +e
+            gh release create "${RELEASE_TAG}" \
+              --title "${FAMILY} ${VERSION}" \
+              --notes-file "$NOTES_FILE" \
+              "${ASSET_FILES[@]}"
+            RELEASE_EXIT=$?
+            set -e
+
+            rm -f "$NOTES_FILE"
+
+            if [[ "$RELEASE_EXIT" -ne 0 ]]; then
+              echo "::error::Failed to create release ${RELEASE_TAG} (exit ${RELEASE_EXIT})"
+              FAILURE_COUNT=$((FAILURE_COUNT + 1))
+              continue
+            fi
+
+            echo "Release created: ${RELEASE_TAG}"
+
+            # === Generate release-manifest JSON (DD-09) ===
+            CREATED_AT=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
+            ASSETS_JSON=$(printf '%s\n' "${ASSET_ENTRIES[@]}" | jq -s '.')
+
+            jq -n \
+              --arg family "$FAMILY" \
+              --arg version "$VERSION" \
+              --arg release_tag "$RELEASE_TAG" \
+              --argjson assets "$ASSETS_JSON" \
+              --arg created_at "$CREATED_AT" \
+              '{
+                family: $family,
+                version: $version,
+                release_tag: $release_tag,
+                assets: $assets,
+                created_at: $created_at
+              }' > "${MANIFEST_DIR}/release-manifest-${FAMILY}-${VERSION}.json"
+
+            echo "Generated: release-manifest-${FAMILY}-${VERSION}.json"
+            RELEASE_COUNT=$((RELEASE_COUNT + 1))
+          done
+
+          echo ""
+          echo "=== Summary: ${RELEASE_COUNT} release(s) created, ${FAILURE_COUNT} failure(s) ==="
+
+          if [[ "$FAILURE_COUNT" -gt 0 ]]; then
+            exit 1
+          fi
+
+      - name: Upload release manifests
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-manifest
+          path: release-manifests/
+          retention-days: 3
+          if-no-files-found: warn
