@@ -167,6 +167,14 @@ jobs:
               print(json.dumps(p))
           ")
 
+          # Read glibc-to-container mapping from platforms.toml
+          GLIBC_MAP=$(python3 -c "
+          import tomllib, json
+          with open('platforms.toml', 'rb') as f:
+              data = tomllib.load(f)
+          print(json.dumps(data.get('glibc_containers', {})))
+          ")
+
           for mold in "${CHANGED_MOLDS[@]}"; do
             MOLD_INFO=$(MOLD_VAR="$mold" python3 -c "
           import tomllib, json, os
@@ -176,12 +184,14 @@ jobs:
           print(json.dumps({
               'source_type': data['source']['type'],
               'family': data['metadata']['family'],
-              'version': data['metadata']['version']
+              'version': data['metadata']['version'],
+              'glibc_min': data.get('source', {}).get('glibc_min', '')
           }))
           ")
             SOURCE_TYPE=$(echo "$MOLD_INFO" | jq -r '.source_type')
             FAMILY=$(echo "$MOLD_INFO" | jq -r '.family')
             VERSION=$(echo "$MOLD_INFO" | jq -r '.version')
+            GLIBC_MIN=$(echo "$MOLD_INFO" | jq -r '.glibc_min')
 
             echo "Detected: ${mold} (${SOURCE_TYPE})"
 
@@ -193,6 +203,35 @@ jobs:
                 ARCH=$(echo "$platform_entry" | jq -r '.arch')
                 RUNNER=$(echo "$platform_entry" | jq -r '.runner')
                 CONTAINER=$(echo "$platform_entry" | jq -r '.container // ""')
+
+                # Override container for Linux platforms when glibc_min is specified
+                if [[ -n "$GLIBC_MIN" && -n "$CONTAINER" && "$PLAT" == "linux" ]]; then
+                  RESOLVED_CONTAINER=$(echo "$GLIBC_MAP" | GLIBC_MIN_VAR="$GLIBC_MIN" python3 -c "
+          import json, sys, os
+          glibc_min = os.environ['GLIBC_MIN_VAR']
+          glibc_map = json.load(sys.stdin)
+          default_info = glibc_map.get('default', {})
+          default_container = default_info.get('container', 'ubuntu:20.04')
+
+          # Find the lowest glibc version in the map that satisfies glibc_min
+          candidates = []
+          for ver, container in glibc_map.items():
+              if ver == 'default' or not isinstance(container, str):
+                  continue
+              ver_tuple = tuple(int(x) for x in ver.split('.'))
+              min_tuple = tuple(int(x) for x in glibc_min.split('.'))
+              if ver_tuple >= min_tuple:
+                  candidates.append((ver_tuple, container))
+
+          if candidates:
+              candidates.sort()
+              print(candidates[0][1])
+          else:
+              print(default_container)
+          ")
+                  CONTAINER="$RESOLVED_CONTAINER"
+                  echo "  Container override for ${PLAT}-${ARCH}: ${CONTAINER} (glibc_min=${GLIBC_MIN})"
+                fi
 
                 ENTRY=$(jq -n \
                   --arg mold "$mold" \

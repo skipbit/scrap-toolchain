@@ -23,6 +23,19 @@ arch = "aarch64"
 runner = "macos-14"
 description = "macOS Apple Silicon"
 
+# glibc version to container image mapping for Linux platforms.
+# When a mold specifies source.glibc_min, the pipeline selects the
+# container that satisfies the requirement.
+[glibc_containers]
+"2.31" = "ubuntu:20.04"
+"2.34" = "ubuntu:22.04"
+"2.35" = "ubuntu:22.04"
+"2.38" = "ubuntu:24.04"
+
+[glibc_containers.default]
+container = "ubuntu:20.04"
+glibc_version = "2.31"
+
 # === Tier 2: Source build only ===
 
 [[platforms.tier2]]
