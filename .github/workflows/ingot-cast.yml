@@ -26,6 +26,11 @@ jobs:
         with:
           fetch-depth: 0
 
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
       - name: Detect build targets
         id: detect
         env:
@@ -49,6 +54,10 @@ jobs:
           if [[ "$EVENT_NAME" == "workflow_dispatch" ]]; then
             # workflow_dispatch: use mold_path directly (bypass DD-07)
             MOLD_PATH="${MOLD_PATH_INPUT%/}"
+            if ! [[ "$MOLD_PATH" =~ ^molds/[a-zA-Z0-9._-]+/[a-zA-Z0-9._-]+$ ]]; then
+              echo "::error::Invalid mold path format: ${MOLD_PATH}"
+              exit 1
+            fi
             if [[ ! -f "${MOLD_PATH}/mold.toml" ]]; then
               echo "::error::Mold not found: ${MOLD_PATH}"
               exit 1
@@ -208,7 +217,7 @@ jobs:
           echo "has_build_targets=${HAS_BUILD}" >> "$GITHUB_OUTPUT"
 
           if [[ "$HAS_FETCH" == "true" ]]; then
-            FETCH_MATRIX=$(printf '%s\n' "${FETCH_ENTRIES[@]}" | jq -s '{include: .}')
+            FETCH_MATRIX=$(printf '%s\n' "${FETCH_ENTRIES[@]}" | jq -cs '{include: .}')
           else
             FETCH_MATRIX='{"include":[]}'
           fi
@@ -243,13 +252,14 @@ jobs:
         env:
           OUTPUT_DIR: ./output
           MOLD: ${{ matrix.mold }}
+          PLATFORM: ${{ matrix.platform }}
+          ARCH: ${{ matrix.arch }}
         run: |
           chmod +x scripts/cast-ingot.sh scripts/smoke-test.sh
           mkdir -p "${OUTPUT_DIR}"
-          scripts/cast-ingot.sh "$MOLD" "${{ matrix.platform }}" "${{ matrix.arch }}"
+          scripts/cast-ingot.sh "$MOLD" "$PLATFORM" "$ARCH"
 
       - name: Upload artifacts
-        if: success()
         uses: actions/upload-artifact@v4
         with:
           name: ingot-${{ matrix.family }}-${{ matrix.version }}-${{ matrix.platform }}-${{ matrix.arch }}
@@ -322,6 +332,7 @@ jobs:
           ")
 
           RELEASE_COUNT=0
+          FAILURE_COUNT=0
 
           for key in "${!MOLD_META_FILES[@]}"; do
             read -ra META_LIST <<< "${MOLD_META_FILES[$key]}"
@@ -343,8 +354,8 @@ jobs:
 
             # === Determine revision tag (ADR-0025) ===
             BASE_TAG="${FAMILY}-${VERSION}"
-            EXISTING_TAGS=$(gh release list --json tagName --jq '.[].tagName' 2>/dev/null \
-              | grep "^${BASE_TAG}" || true)
+            EXISTING_TAGS=$(gh release list --limit 1000 --json tagName --jq '.[].tagName' 2>/dev/null \
+              | grep -xE "${BASE_TAG}(-r[0-9]+)?" || true)
 
             if [[ -z "$EXISTING_TAGS" ]]; then
               # First build: use base tag
@@ -459,12 +470,22 @@ jobs:
             } > "$NOTES_FILE"
 
             # === Create GitHub Release ===
+            set +e
             gh release create "${RELEASE_TAG}" \
               --title "${FAMILY} ${VERSION}" \
               --notes-file "$NOTES_FILE" \
               "${ASSET_FILES[@]}"
+            RELEASE_EXIT=$?
+            set -e
 
             rm -f "$NOTES_FILE"
+
+            if [[ "$RELEASE_EXIT" -ne 0 ]]; then
+              echo "::error::Failed to create release ${RELEASE_TAG} (exit ${RELEASE_EXIT})"
+              FAILURE_COUNT=$((FAILURE_COUNT + 1))
+              continue
+            fi
+
             echo "Release created: ${RELEASE_TAG}"
 
             # === Generate release-manifest JSON (DD-09) ===
@@ -490,10 +511,13 @@ jobs:
           done
 
           echo ""
-          echo "=== Summary: ${RELEASE_COUNT} release(s) created ==="
+          echo "=== Summary: ${RELEASE_COUNT} release(s) created, ${FAILURE_COUNT} failure(s) ==="
+
+          if [[ "$FAILURE_COUNT" -gt 0 ]]; then
+            exit 1
+          fi
 
       - name: Upload release manifests
-        if: success()
         uses: actions/upload-artifact@v4
         with:
           name: release-manifest
