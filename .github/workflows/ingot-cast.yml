@@ -281,7 +281,7 @@ jobs:
           apt-get update -qq
           apt-get install -y -qq \
             ca-certificates curl jq xz-utils patch file binutils \
-            python3-pip libc6-dev
+            python3-pip libc6-dev libxml2
           pip3 install tomli
 
       - name: Set up Python
