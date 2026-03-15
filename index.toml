@@ -1,6 +1,6 @@
 [index]
 schema_version = 1
-generated_at = "2026-03-15T08:04:05Z"
+generated_at = "2026-03-15T08:57:37Z"
 generator = "scripts/generate-index.sh"
 
 [[toolchains]]
@@ -10,4 +10,18 @@ status = "active"
 license = "Apache-2.0 WITH LLVM-exception"
 source_type = "fetch"
 compiler = "clang"
+
+[[toolchains.ingots]]
+platform = "linux"
+arch = "aarch64"
+url = "https://github.com/skipbit/scrap-toolchain/releases/download/llvm-22.1.0/llvm-22.1.0-linux-aarch64.tar.xz"
+sha256 = "3f6b7b3400845ca62937a7633a6f1d42e11e2496bfddb9667af2d926545d73b4"
+glibc_version = "2.35"
+
+[[toolchains.ingots]]
+platform = "linux"
+arch = "x86_64"
+url = "https://github.com/skipbit/scrap-toolchain/releases/download/llvm-22.1.0/llvm-22.1.0-linux-x86_64.tar.xz"
+sha256 = "8ea8b84132835d50f886bfb6863f4a4638e62533804b5672e7c926359263ab8c"
+glibc_version = "2.35"
 
