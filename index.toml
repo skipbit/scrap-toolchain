@@ -1,0 +1,13 @@
+[index]
+schema_version = 1
+generated_at = "2026-03-15T06:45:09Z"
+generator = "scripts/generate-index.sh"
+
+[[toolchains]]
+family = "llvm"
+version = "22.1.0"
+status = "active"
+license = "Apache-2.0 WITH LLVM-exception"
+source_type = "fetch"
+compiler = "clang"
+
