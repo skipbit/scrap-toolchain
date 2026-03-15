@@ -1,6 +1,6 @@
 [index]
 schema_version = 1
-generated_at = "2026-03-15T09:59:23Z"
+generated_at = "2026-03-15T10:00:09Z"
 generator = "scripts/generate-index.sh"
 
 [[toolchains]]
@@ -15,5 +15,5 @@ compiler = "clang"
 platform = "darwin"
 arch = "aarch64"
 url = "https://github.com/skipbit/scrap-toolchain/releases/download/llvm-22.1.0/llvm-22.1.0-darwin-aarch64.tar.xz"
-sha256 = "59fbeb48477fbeea295cdbe7d3bf40749d200df889325619ac5bd3eebe551ac2"
+sha256 = "7dfab2f00401434bb9b8396410ca679f51f2346330c3656897670366bb05fd6a"
 
