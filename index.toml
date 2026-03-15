@@ -1,6 +1,6 @@
 [index]
 schema_version = 1
-generated_at = "2026-03-15T08:57:37Z"
+generated_at = "2026-03-15T08:58:38Z"
 generator = "scripts/generate-index.sh"
 
 [[toolchains]]
@@ -15,13 +15,13 @@ compiler = "clang"
 platform = "linux"
 arch = "aarch64"
 url = "https://github.com/skipbit/scrap-toolchain/releases/download/llvm-22.1.0/llvm-22.1.0-linux-aarch64.tar.xz"
-sha256 = "3f6b7b3400845ca62937a7633a6f1d42e11e2496bfddb9667af2d926545d73b4"
+sha256 = "3788dde4d67164cce8c98e63ca2ccfac862dc596c8d448d41ecd908597a09028"
 glibc_version = "2.35"
 
 [[toolchains.ingots]]
 platform = "linux"
 arch = "x86_64"
 url = "https://github.com/skipbit/scrap-toolchain/releases/download/llvm-22.1.0/llvm-22.1.0-linux-x86_64.tar.xz"
-sha256 = "8ea8b84132835d50f886bfb6863f4a4638e62533804b5672e7c926359263ab8c"
+sha256 = "0c90686efdcb344135c377f944c90ae5303122744fa06abd833ce58e2bae26b9"
 glibc_version = "2.35"
 
