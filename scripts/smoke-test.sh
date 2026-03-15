@@ -64,8 +64,11 @@ for cmd in python3 jq; do
     fi
 done
 
-if ! python3 -c "import tomllib" 2>/dev/null; then
-    echo "Error: Python 3.11+ with tomllib module is required"
+if ! python3 -c "try:
+    import tomllib
+except ImportError:
+    import tomli" 2>/dev/null; then
+    echo "Error: Python 3.11+ (tomllib) or tomli package is required"
     exit 2
 fi
 
@@ -90,7 +93,11 @@ WORK_DIR=$(mktemp -d)
 
 set +e
 TEST_DATA=$(python3 -c "
-import tomllib, json, sys, os
+try:
+    import tomllib
+except ImportError:
+    import tomli as tomllib
+import json, sys, os
 
 mold_path = sys.argv[1]
 work_dir = sys.argv[2]

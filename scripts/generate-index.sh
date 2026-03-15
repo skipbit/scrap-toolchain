@@ -69,8 +69,11 @@ for cmd in python3 jq; do
     fi
 done
 
-if ! python3 -c "import tomllib" 2>/dev/null; then
-    echo "Error: Python 3.11+ with tomllib module is required"
+if ! python3 -c "try:
+    import tomllib
+except ImportError:
+    import tomli" 2>/dev/null; then
+    echo "Error: Python 3.11+ (tomllib) or tomli package is required"
     exit 2
 fi
 
@@ -326,7 +329,11 @@ EXISTING_INDEX_JSON=""
 if [[ -f "$INDEX_FILE" ]]; then
     set +e
     EXISTING_INDEX_JSON=$(python3 -c "
-import tomllib, json, sys
+try:
+    import tomllib
+except ImportError:
+    import tomli as tomllib
+import json, sys
 with open(sys.argv[1], 'rb') as f:
     data = tomllib.load(f)
 json.dump(data, sys.stdout)
@@ -344,7 +351,11 @@ for mold_path in "${MOLD_PATHS[@]}"; do
     # Parse mold.toml
     set +e
     mold_json=$(python3 -c "
-import tomllib, json, sys
+try:
+    import tomllib
+except ImportError:
+    import tomli as tomllib
+import json, sys
 with open(sys.argv[1], 'rb') as f:
     data = tomllib.load(f)
 json.dump(data, sys.stdout)
