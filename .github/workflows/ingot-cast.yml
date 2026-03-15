@@ -255,6 +255,11 @@ jobs:
           PLATFORM: ${{ matrix.platform }}
           ARCH: ${{ matrix.arch }}
         run: |
+          # Ensure setup-python's Python is in PATH (container environments
+          # may not propagate GITHUB_PATH correctly with the default shell)
+          if [ -n "${pythonLocation:-}" ]; then
+            export PATH="${pythonLocation}/bin:${PATH}"
+          fi
           chmod +x scripts/cast-ingot.sh scripts/smoke-test.sh
           mkdir -p "${OUTPUT_DIR}"
           scripts/cast-ingot.sh "$MOLD" "$PLATFORM" "$ARCH"
