@@ -20,6 +20,7 @@ permissions:
 jobs:
   update-index:
     runs-on: ubuntu-24.04
+    timeout-minutes: 10
     steps:
       - name: Generate token
         id: app-token
@@ -38,6 +39,10 @@ jobs:
           python-version: '3.12'
 
       # Download artifacts from the triggering ingot-cast run.
+      # Downloads all artifacts (release-manifest JSON + ingot artifacts).
+      # Ingot artifacts include tar.xz binaries alongside metadata JSON;
+      # only the JSON files are used by generate-index.sh, but selective
+      # download within an artifact is not supported by download-artifact.
       # continue-on-error handles expected scenarios where no artifacts exist:
       #   - ingot-cast skipped builds (DD-07: metadata-only changes)
       #   - ingot-cast failed before upload-release
@@ -56,13 +61,17 @@ jobs:
 
       - name: Report artifact status
         if: github.event_name == 'workflow_run'
+        env:
+          DOWNLOAD_OUTCOME: ${{ steps.download-artifacts.outcome }}
+          TRIGGERING_RUN_ID: ${{ github.event.workflow_run.id }}
         run: |
-          if [[ "${{ steps.download-artifacts.outcome }}" == "success" ]]; then
-            echo "Artifacts downloaded from run ${{ github.event.workflow_run.id }}"
+          echo "Triggering run: ${TRIGGERING_RUN_ID}"
+          echo "Artifact download: ${DOWNLOAD_OUTCOME}"
+          if [[ "${DOWNLOAD_OUTCOME}" == "success" ]]; then
+            echo "Artifact files:"
             find artifacts/ -type f -name '*.json' | sort
           else
-            echo "No artifacts available (outcome: ${{ steps.download-artifacts.outcome }})"
-            echo "generate-index.sh will use GitHub Releases API fallback"
+            echo "No artifacts available; generate-index.sh will use GitHub Releases API fallback"
           fi
 
       - name: Generate index
@@ -77,6 +86,7 @@ jobs:
       - name: Commit and push
         env:
           GITHUB_TOKEN: ${{ steps.app-token.outputs.token }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
         run: |
           if [[ -z "$(git status --porcelain -- index.toml)" ]]; then
             echo "No changes to index.toml"
@@ -89,15 +99,39 @@ jobs:
           git add index.toml
           git commit -m "chore: update index.toml"
 
+          # Determine ARTIFACT_DIR for potential regeneration on retry.
+          ARTIFACT_DIR=""
+          if [[ -d "artifacts" ]]; then
+            ARTIFACT_DIR="artifacts"
+          fi
+          export ARTIFACT_DIR
+
           MAX_RETRIES=3
           for attempt in $(seq 1 "$MAX_RETRIES"); do
             if git push; then
               echo "Successfully pushed (attempt ${attempt})"
               exit 0
             fi
+
             echo "Push failed (attempt ${attempt}/${MAX_RETRIES})"
             if [[ "$attempt" -lt "$MAX_RETRIES" ]]; then
+              # Discard the pending commit, pull latest, regenerate, and recommit.
+              # This handles the case where another index-update run pushed between
+              # our commit and push, avoiding rebase conflicts on index.toml.
+              git reset --soft HEAD~1
+              git checkout -- index.toml
               git pull --rebase
+
+              chmod +x scripts/generate-index.sh
+              scripts/generate-index.sh
+
+              if [[ -z "$(git status --porcelain -- index.toml)" ]]; then
+                echo "No changes after regeneration"
+                exit 0
+              fi
+
+              git add index.toml
+              git commit -m "chore: update index.toml"
             fi
           done
 
