@@ -13,6 +13,7 @@ compiler = "clang"
 
 [source]
 type = "fetch"
+glibc_min = "2.34"
 
 [[source.binaries]]
 platform = "linux"

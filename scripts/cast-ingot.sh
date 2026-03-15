@@ -24,7 +24,16 @@ BASE_WORK_DIR="${WORK_DIR:-/tmp/cast-ingot}"
 OUTPUT_DIR="${OUTPUT_DIR:-./output}"
 
 MAX_DL_RETRIES=3
-GLIBC_BASELINE="2.31"
+GLIBC_BASELINE=$(python3 -c "
+try:
+    import tomllib
+except ImportError:
+    import tomli as tomllib
+import sys
+with open(sys.argv[1], 'rb') as f:
+    data = tomllib.load(f)
+print(data.get('source', {}).get('glibc_min', '2.31'))
+" "${MOLD_DIR}/mold.toml" 2>/dev/null || echo "2.31")
 
 # --- Colors (disabled if not a terminal) ---
 if [[ -t 1 ]]; then

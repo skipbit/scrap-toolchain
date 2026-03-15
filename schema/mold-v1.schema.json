@@ -104,6 +104,11 @@
           "items": { "$ref": "#/$defs/binary" },
           "description": "Platform-specific prebuilt binary URLs (required for fetch type)"
         },
+        "glibc_min": {
+          "type": "string",
+          "pattern": "^[0-9]+\\.[0-9]+$",
+          "description": "Minimum glibc version required by pre-built binaries (e.g., 2.34). When specified, the build container is selected to satisfy this requirement."
+        },
         "build_fallback": { "$ref": "#/$defs/buildFallback" },
         "build": { "$ref": "#/$defs/buildDefinition" }
       }
