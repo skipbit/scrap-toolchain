@@ -21,25 +21,43 @@ jobs:
   detect-changes:
     runs-on: ubuntu-24.04
     outputs:
-      has_changes: ${{ steps.detect.outputs.has_changes }}
-      changed_molds: ${{ steps.detect.outputs.changed_molds }}
+      has_fetch_targets: ${{ steps.classify.outputs.has_fetch_targets }}
+      has_build_targets: ${{ steps.classify.outputs.has_build_targets }}
+      fetch_matrix: ${{ steps.classify.outputs.fetch_matrix }}
+      build_molds: ${{ steps.classify.outputs.build_molds }}
     steps:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
 
-      - name: Detect changed molds
-        id: detect
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Detect and classify changed molds
+        id: classify
         env:
           BASE_SHA: ${{ github.event.pull_request.base.sha }}
           HEAD_SHA: ${{ github.sha }}
         run: |
+          set -euo pipefail
+
+          no_targets() {
+            {
+              echo "has_fetch_targets=false"
+              echo "has_build_targets=false"
+              echo 'fetch_matrix={"include":[]}'
+              echo 'build_molds=[]'
+            } >> "$GITHUB_OUTPUT"
+          }
+
           CHANGED_FILES=$(git diff --name-only "${BASE_SHA}" "${HEAD_SHA}")
 
-          # Check if infrastructure files changed (schema, scripts, platforms.toml)
+          # Check if infrastructure files changed
           INFRA_CHANGED=$(echo "$CHANGED_FILES" | grep -E '^(schema/|scripts/|platforms\.toml)' || true)
 
-          # Extract unique mold directories (molds/{family}/{version}) from changed files
+          # Extract unique mold directories
           MOLD_DIRS=$(echo "$CHANGED_FILES" \
             | grep '^molds/' \
             | sed 's|^\(molds/[^/]*/[^/]*\)/.*|\1|; s|^\(molds/[^/]*/[^/]*\)$|\1|' \
@@ -51,7 +69,7 @@ jobs:
               | sed 's|/mold\.toml$||' | sort -u || true)
           fi
 
-          # Filter to molds that exist (skip deleted molds)
+          # Filter to molds that exist
           VALID_MOLDS=()
           while IFS= read -r mold; do
             [[ -z "$mold" ]] && continue
@@ -59,27 +77,194 @@ jobs:
           done <<< "$MOLD_DIRS"
 
           if [[ ${#VALID_MOLDS[@]} -eq 0 ]]; then
-            echo "has_changes=false" >> "$GITHUB_OUTPUT"
-            echo "changed_molds=[]" >> "$GITHUB_OUTPUT"
             echo "No mold changes detected"
-          else
-            JSON=$(printf '%s\n' "${VALID_MOLDS[@]}" | jq -R -s -c 'split("\n") | map(select(. != ""))')
-            echo "has_changes=true" >> "$GITHUB_OUTPUT"
-            echo "changed_molds=${JSON}" >> "$GITHUB_OUTPUT"
-            echo "Detected molds: ${JSON}"
+            no_targets
+            exit 0
           fi
 
-  validate:
+          # Read Tier 1 platforms from platforms.toml
+          # NOTE: platforms.toml is PR-modifiable. This is acceptable because:
+          # - Public repo uses only GitHub-hosted standard runners (no self-hosted)
+          # - Runner names are validated by GitHub Actions (invalid names cause job failure)
+          # - If self-hosted runners are added in the future, add runner name validation here
+          TIER1_PLATFORMS=$(python3 -c "
+          import tomllib, json
+          with open('platforms.toml', 'rb') as f:
+              data = tomllib.load(f)
+          for p in data['platforms']['tier1']:
+              print(json.dumps(p))
+          ")
+
+          # Read glibc container mapping
+          GLIBC_MAP=$(python3 -c "
+          import tomllib, json
+          with open('platforms.toml', 'rb') as f:
+              data = tomllib.load(f)
+          print(json.dumps(data.get('glibc_containers', {})))
+          ")
+
+          # Classify molds and build fetch matrix
+          FETCH_ENTRIES=()
+          BUILD_MOLDS=()
+          HAS_FETCH=false
+          HAS_BUILD=false
+
+          for mold in "${VALID_MOLDS[@]}"; do
+            # Parse mold.toml with error recovery (M-3: don't kill entire job on bad mold)
+            set +e
+            MOLD_INFO=$(MOLD_VAR="$mold" python3 -c "
+          import tomllib, json, os
+          mold = os.environ['MOLD_VAR']
+          with open(f'{mold}/mold.toml', 'rb') as f:
+              data = tomllib.load(f)
+          binaries = data.get('source', {}).get('binaries', [])
+          platforms = [{'platform': b['platform'], 'arch': b['arch']} for b in binaries]
+          print(json.dumps({
+              'source_type': data['source']['type'],
+              'glibc_min': data.get('source', {}).get('glibc_min', ''),
+              'binary_platforms': platforms
+          }))
+          " 2>/dev/null)
+            PARSE_EXIT=$?
+            set -e
+
+            if [[ "$PARSE_EXIT" -ne 0 || -z "$MOLD_INFO" ]]; then
+              echo "::warning::Failed to parse ${mold}/mold.toml; skipping"
+              continue
+            fi
+
+            SOURCE_TYPE=$(echo "$MOLD_INFO" | jq -r '.source_type')
+            GLIBC_MIN=$(echo "$MOLD_INFO" | jq -r '.glibc_min')
+
+            echo "Detected: ${mold} (${SOURCE_TYPE})"
+
+            if [[ "$SOURCE_TYPE" == "fetch" ]]; then
+              HAS_FETCH=true
+
+              # Generate matrix entries for each Tier 1 platform that has a binary
+              while IFS= read -r platform_entry; do
+                [[ -z "$platform_entry" ]] && continue
+                PLAT=$(echo "$platform_entry" | jq -r '.platform')
+                ARCH=$(echo "$platform_entry" | jq -r '.arch')
+                RUNNER=$(echo "$platform_entry" | jq -r '.runner')
+                CONTAINER=$(echo "$platform_entry" | jq -r '.container // ""')
+
+                # Check if mold has a binary for this platform
+                HAS_BINARY=$(echo "$MOLD_INFO" | jq --arg p "$PLAT" --arg a "$ARCH" \
+                  '[.binary_platforms[] | select(.platform == $p and .arch == $a)] | length > 0')
+
+                if [[ "$HAS_BINARY" != "true" ]]; then
+                  # Linux platforms are mandatory for fetch-type molds
+                  if [[ "$PLAT" == "linux" ]]; then
+                    echo "::error::Fetch-type mold ${mold} is missing mandatory binary for ${PLAT}-${ARCH}"
+                    exit 1
+                  fi
+                  echo "  Skipping ${PLAT}-${ARCH}: no binary defined in mold (optional)"
+                  continue
+                fi
+
+                # Resolve container for glibc_min (Linux only)
+                if [[ -n "$GLIBC_MIN" && -n "$CONTAINER" && "$PLAT" == "linux" ]]; then
+                  RESOLVED_CONTAINER=$(echo "$GLIBC_MAP" | GLIBC_MIN_VAR="$GLIBC_MIN" python3 -c "
+          import json, sys, os
+          glibc_min = os.environ['GLIBC_MIN_VAR']
+          glibc_map = json.load(sys.stdin)
+          default_container = glibc_map.get('default', {}).get('container', 'ubuntu:20.04') if isinstance(glibc_map.get('default'), dict) else 'ubuntu:20.04'
+          candidates = []
+          for ver, container in glibc_map.items():
+              if ver == 'default' or not isinstance(container, str):
+                  continue
+              ver_tuple = tuple(int(x) for x in ver.split('.'))
+              min_tuple = tuple(int(x) for x in glibc_min.split('.'))
+              if ver_tuple >= min_tuple:
+                  candidates.append((ver_tuple, container))
+          if candidates:
+              candidates.sort()
+              print(candidates[0][1])
+          else:
+              print(default_container)
+          ")
+                  CONTAINER="$RESOLVED_CONTAINER"
+                fi
+
+                ENTRY=$(jq -n \
+                  --arg mold "$mold" \
+                  --arg platform "$PLAT" \
+                  --arg arch "$ARCH" \
+                  --arg runner "$RUNNER" \
+                  --arg container "$CONTAINER" \
+                  '{mold: $mold, platform: $platform, arch: $arch,
+                    runner: $runner, container: $container}')
+                FETCH_ENTRIES+=("$ENTRY")
+                echo "  Added: ${PLAT}-${ARCH} (runner: ${RUNNER}, container: ${CONTAINER})"
+              done <<< "$TIER1_PLATFORMS"
+
+            elif [[ "$SOURCE_TYPE" == "build" ]]; then
+              HAS_BUILD=true
+              BUILD_MOLDS+=("$mold")
+            fi
+          done
+
+          # Determine has_fetch_targets from actual entry count (L-1 fix)
+          if [[ ${#FETCH_ENTRIES[@]} -gt 0 ]]; then
+            HAS_FETCH=true
+            FETCH_MATRIX=$(printf '%s\n' "${FETCH_ENTRIES[@]}" | jq -cs '{include: .}')
+          else
+            HAS_FETCH=false
+            FETCH_MATRIX='{"include":[]}'
+          fi
+
+          echo "has_fetch_targets=${HAS_FETCH}" >> "$GITHUB_OUTPUT"
+          echo "has_build_targets=${HAS_BUILD}" >> "$GITHUB_OUTPUT"
+          fi
+          echo "fetch_matrix=${FETCH_MATRIX}" >> "$GITHUB_OUTPUT"
+
+          if [[ "$HAS_BUILD" == "true" ]]; then
+            BUILD_JSON=$(printf '%s\n' "${BUILD_MOLDS[@]}" | jq -R -s -c 'split("\n") | map(select(. != ""))')
+          else
+            BUILD_JSON='[]'
+          fi
+          echo "build_molds=${BUILD_JSON}" >> "$GITHUB_OUTPUT"
+
+          echo ""
+          echo "=== Summary ==="
+          echo "Fetch targets: ${HAS_FETCH} (${#FETCH_ENTRIES[@]} entries)"
+          echo "Build targets: ${HAS_BUILD} (${#BUILD_MOLDS[@]} molds)"
+
+  # Fetch-type validation: all Tier 1 platforms
+  # Runs validate-mold.sh for schema/URL checks, then cast-ingot.sh for
+  # full verification (DL, SHA256, layout, license, glibc, smoke test).
+  # Each platform runs on its native runner for accurate validation.
+  validate-fetch:
     needs: detect-changes
-    if: needs.detect-changes.outputs.has_changes == 'true' && needs.detect-changes.outputs.changed_molds != '[]'
-    runs-on: ubuntu-24.04
+    if: needs.detect-changes.outputs.has_fetch_targets == 'true'
+    runs-on: ${{ matrix.runner }}
+    container: ${{ matrix.container || '' }}
     timeout-minutes: 30
     strategy:
-      matrix:
-        mold: ${{ fromJSON(needs.detect-changes.outputs.changed_molds) }}
+      matrix: ${{ fromJSON(needs.detect-changes.outputs.fetch_matrix) }}
       fail-fast: false
     steps:
       - uses: actions/checkout@v4
+
+      - name: Install system prerequisites (Linux container)
+        if: matrix.container
+        run: |
+          apt-get update -qq
+          apt-get install -y -qq \
+            ca-certificates curl jq xz-utils file binutils \
+            python3-pip libc6-dev
+          pip3 install --break-system-packages tomli jsonschema
+
+      - name: Set up Python
+        if: ${{ !matrix.container }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install validation tools (non-container)
+        if: ${{ !matrix.container }}
+        run: pip install jsonschema
 
       - name: Validate mold path format
         env:
@@ -90,6 +275,58 @@ jobs:
             exit 1
           fi
 
+      - name: Validate mold definition
+        env:
+          MOLD: ${{ matrix.mold }}
+        run: |
+          chmod +x scripts/validate-mold.sh
+          scripts/validate-mold.sh "$MOLD"
+
+      - name: Fetch validation
+        env:
+          MOLD: ${{ matrix.mold }}
+          PLATFORM: ${{ matrix.platform }}
+          ARCH: ${{ matrix.arch }}
+          OUTPUT_DIR: ${{ runner.temp }}/fetch-validation-output
+        run: |
+          chmod +x scripts/cast-ingot.sh scripts/smoke-test.sh
+          mkdir -p "${OUTPUT_DIR}"
+          scripts/cast-ingot.sh "$MOLD" "$PLATFORM" "$ARCH"
+
+      - name: Post PR comment on failure
+        if: failure()
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ github.token }}
+          MOLD: ${{ matrix.mold }}
+          PLATFORM: ${{ matrix.platform }}
+          ARCH: ${{ matrix.arch }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          BODY="## Validation Failed: \`${MOLD}\` (${PLATFORM}-${ARCH})
+
+          The fetch validation for \`${MOLD}\` on **${PLATFORM}-${ARCH}** has failed.
+
+          See the [workflow run](${RUN_URL}) for details."
+
+          gh pr comment "${PR_NUMBER}" --body "${BODY}"
+
+  # Build-type Light Build Verification.
+  # Downloads source, verifies SHA256, extracts, installs prerequisites,
+  # and runs configure only. Linux x86_64 only.
+  validate-build:
+    needs: detect-changes
+    if: needs.detect-changes.outputs.has_build_targets == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    strategy:
+      matrix:
+        mold: ${{ fromJSON(needs.detect-changes.outputs.build_molds) }}
+      fail-fast: false
+    steps:
+      - uses: actions/checkout@v4
+
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
@@ -98,49 +335,23 @@ jobs:
       - name: Install validation tools
         run: pip install jsonschema
 
+      - name: Validate mold path format
+        env:
+          MOLD: ${{ matrix.mold }}
+        run: |
+          if ! echo "$MOLD" | grep -qE '^molds/[a-z][a-z0-9-]*/[0-9a-zA-Z][0-9a-zA-Z._-]*$'; then
+            echo "::error::Invalid mold path format: ${MOLD}"
+            exit 1
+          fi
+
       - name: Validate mold definition
-        id: validate
         env:
           MOLD: ${{ matrix.mold }}
         run: |
           chmod +x scripts/validate-mold.sh
           scripts/validate-mold.sh "$MOLD"
 
-      - name: Determine source type
-        if: success()
-        id: source-type
-        env:
-          MOLD: ${{ matrix.mold }}
-        run: |
-          SOURCE_TYPE=$(python3 -c "
-          import tomllib, os
-          mold = os.environ['MOLD']
-          with open(f'{mold}/mold.toml', 'rb') as f:
-              data = tomllib.load(f)
-          print(data['source']['type'])
-          ")
-          echo "type=${SOURCE_TYPE}" >> "$GITHUB_OUTPUT"
-
-      # Fetch-type validation (ADR-0035: recipe quality verification):
-      # Runs cast-ingot.sh to download, verify SHA256, check layout,
-      # license files, glibc compatibility, and run smoke test.
-      # No ingot archive is produced — validation only.
-      - name: Fetch validation
-        if: success() && steps.source-type.outputs.type == 'fetch'
-        env:
-          MOLD: ${{ matrix.mold }}
-          OUTPUT_DIR: ${{ runner.temp }}/fetch-validation-output
-        run: |
-          chmod +x scripts/cast-ingot.sh scripts/smoke-test.sh
-          mkdir -p "${OUTPUT_DIR}"
-          scripts/cast-ingot.sh "$MOLD" linux x86_64
-
-      # Light Build Verification (build type):
-      # Downloads source, verifies SHA256, extracts, installs prerequisites,
-      # and runs configure only (no make/build). Smoke test is not executed
-      # because no compiled binary is produced at this stage.
-      - name: Light Build Verification (build - configure only)
-        if: success() && steps.source-type.outputs.type == 'build'
+      - name: Light Build Verification (configure only)
         env:
           MOLD_PATH: ${{ matrix.mold }}
         run: |
@@ -223,7 +434,7 @@ jobs:
         run: |
           BODY="## Validation Failed: \`${MOLD}\`
 
-          The PR validation for \`${MOLD}\` has failed.
+          The build validation for \`${MOLD}\` has failed.
 
           See the [workflow run](${RUN_URL}) for details."
 
