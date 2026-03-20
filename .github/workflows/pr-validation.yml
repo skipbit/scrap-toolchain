@@ -252,7 +252,7 @@ jobs:
           apt-get update -qq
           apt-get install -y -qq \
             ca-certificates curl jq xz-utils file binutils \
-            python3-pip libc6-dev
+            python3-pip libc6-dev libxml2
           # Use --break-system-packages only if pip supports it (pip 23+, PEP 668)
           pip3 install tomli jsonschema 2>/dev/null \
             || pip3 install --break-system-packages tomli jsonschema
