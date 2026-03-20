@@ -288,6 +288,26 @@ collect_ingots() {
     echo "$ingots"
 }
 
+# --- Collect fetch-type ingots from mold.toml ---
+# Reads source.binaries[] directly from the parsed mold JSON (ADR-0035).
+# No CI artifacts or API calls needed — mold.toml is the single source of truth.
+# Args: $1 = mold JSON (parsed mold.toml as JSON string)
+# Output: JSON array of ingot objects on stdout
+collect_fetch_ingots() {
+    local mold_json="$1"
+    local glibc_min
+    glibc_min=$(echo "$mold_json" | jq -r '.source.glibc_min // empty')
+
+    echo "$mold_json" | jq --arg glibc_min "$glibc_min" '
+        [.source.binaries[] | {
+            platform,
+            arch,
+            url,
+            sha256
+        } + if (.platform == "linux" and $glibc_min != "") then {glibc_version: $glibc_min} else {} end]
+    '
+}
+
 # --- Step 1: Scan molds ---
 echo -e "${BOLD}1. Scan molds${RESET}"
 
@@ -392,26 +412,39 @@ json.dump(data, sys.stdout)
     compiler=$(echo "$mold_json" | jq -r '.metadata.components.compiler // empty')
     min_scrap=$(echo "$mold_json" | jq -r '.metadata.min_scrap_version // empty')
 
-    info "Processing: ${family} ${version} (${status})"
+    info "Processing: ${family} ${version} (${source_type}, ${status})"
 
-    # Resolve release tag
-    release_tag=$(resolve_release_tag "$family" "$version")
-    info "Release tag: ${release_tag}"
+    # Collect ingots based on source type (ADR-0035)
+    origin=""
+    if [[ "$source_type" == "fetch" ]]; then
+        # Fetch type: read directly from mold.toml (mold is SSoT)
+        ingots=$(collect_fetch_ingots "$mold_json")
+        origin="upstream"
+        info "Fetch type: reading upstream URLs from mold.toml"
+    elif [[ "$source_type" == "build" ]]; then
+        # Build type: resolve from CI artifacts or GitHub API
+        release_tag=$(resolve_release_tag "$family" "$version")
+        info "Release tag: ${release_tag}"
+        ingots=$(collect_ingots "$family" "$version" "$release_tag")
+        origin="scrap-release"
 
-    # Collect ingots
-    ingots=$(collect_ingots "$family" "$version" "$release_tag")
-    ingot_count=$(echo "$ingots" | jq 'length')
-
-    # If no ingots found, try to preserve existing entries
-    if [[ "$ingot_count" -eq 0 && -n "$EXISTING_INDEX_JSON" ]]; then
-        existing_ingots=$(echo "$EXISTING_INDEX_JSON" | jq --arg f "$family" --arg v "$version" \
-            '[.toolchains[]? | select(.family == $f and .version == $v) | .ingots[]?] // []' 2>/dev/null) || true
-        if [[ -n "$existing_ingots" && $(echo "$existing_ingots" | jq 'length') -gt 0 ]]; then
-            ingots="$existing_ingots"
-            ingot_count=$(echo "$ingots" | jq 'length')
-            info "Preserved ${ingot_count} existing ingot(s) from current index"
+        # Build type: preserve existing entries on API failure
+        ingot_count=$(echo "$ingots" | jq 'length')
+        if [[ "$ingot_count" -eq 0 && -n "$EXISTING_INDEX_JSON" ]]; then
+            existing_ingots=$(echo "$EXISTING_INDEX_JSON" | jq --arg f "$family" --arg v "$version" \
+                '[.toolchains[]? | select(.family == $f and .version == $v) | .ingots[]?] // []' 2>/dev/null) || true
+            if [[ -n "$existing_ingots" && $(echo "$existing_ingots" | jq 'length') -gt 0 ]]; then
+                ingots="$existing_ingots"
+                info "Preserved existing ingot(s) from current index"
+            fi
         fi
+    else
+        warn "Unknown source type '${source_type}' in ${mold_path}; skipping"
+        MOLD_ERRORS=$((MOLD_ERRORS + 1))
+        continue
     fi
+
+    ingot_count=$(echo "$ingots" | jq 'length')
 
     if [[ "$ingot_count" -gt 0 ]]; then
         pass "${family} ${version}: ${ingot_count} ingot(s)"
@@ -428,6 +461,7 @@ json.dump(data, sys.stdout)
         --arg source_type "$source_type" \
         --arg compiler "$compiler" \
         --arg min_scrap "$min_scrap" \
+        --arg origin "$origin" \
         --argjson ingots "$ingots" \
         '{
             family: $family,
@@ -435,7 +469,8 @@ json.dump(data, sys.stdout)
             status: $status,
             license: $license,
             source_type: $source_type,
-            compiler: $compiler
+            compiler: $compiler,
+            origin: $origin
         }
         + if $min_scrap != "" then {min_scrap_version: $min_scrap} else {} end
         + {ingots: $ingots}')
@@ -488,6 +523,8 @@ for tc in toolchains:
     lines.append(f'license = \"{esc(tc[\"license\"])}\"')
     lines.append(f'source_type = \"{esc(tc[\"source_type\"])}\"')
     lines.append(f'compiler = \"{esc(tc[\"compiler\"])}\"')
+    if tc.get('origin'):
+        lines.append(f'origin = \"{esc(tc[\"origin\"])}\"')
     if tc.get('min_scrap_version'):
         lines.append(f'min_scrap_version = \"{esc(tc[\"min_scrap_version\"])}\"')
 
