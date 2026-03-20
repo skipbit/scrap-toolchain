@@ -132,6 +132,10 @@
             },
             "not": { "required": ["build"] }
           }
+        },
+        "not": {
+          "required": ["patches"],
+          "description": "Fetch-type molds must not define patches (ADR-0035: upstream binaries are used as-is)"
         }
       }
     },
