@@ -18,9 +18,7 @@ jobs:
   detect-build-targets:
     runs-on: ubuntu-24.04
     outputs:
-      has_fetch_targets: ${{ steps.detect.outputs.has_fetch_targets }}
       has_build_targets: ${{ steps.detect.outputs.has_build_targets }}
-      fetch_matrix: ${{ steps.detect.outputs.fetch_matrix }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -43,9 +41,7 @@ jobs:
 
           no_targets() {
             {
-              echo "has_fetch_targets=false"
               echo "has_build_targets=false"
-              echo 'fetch_matrix={"include":[]}'
             } >> "$GITHUB_OUTPUT"
           }
 
@@ -152,182 +148,46 @@ jobs:
             exit 0
           fi
 
-          # === Step 2: Classify by source type and build platform matrix ===
+          # === Step 2: Classify by source type ===
+          # ADR-0035: fetch-type molds no longer produce artifacts in CI.
+          # Only build-type molds trigger ingot production (TSK-0003).
 
-          FETCH_ENTRIES=()
-          HAS_FETCH=false
           HAS_BUILD=false
 
-          # Read Tier 1 platforms from platforms.toml
-          TIER1_PLATFORMS=$(python3 -c "
-          import tomllib, json
-          with open('platforms.toml', 'rb') as f:
-              data = tomllib.load(f)
-          for p in data['platforms']['tier1']:
-              print(json.dumps(p))
-          ")
-
-          # Read glibc-to-container mapping from platforms.toml
-          GLIBC_MAP=$(python3 -c "
-          import tomllib, json
-          with open('platforms.toml', 'rb') as f:
-              data = tomllib.load(f)
-          print(json.dumps(data.get('glibc_containers', {})))
-          ")
-
           for mold in "${CHANGED_MOLDS[@]}"; do
-            MOLD_INFO=$(MOLD_VAR="$mold" python3 -c "
-          import tomllib, json, os
+            SOURCE_TYPE=$(MOLD_VAR="$mold" python3 -c "
+          import tomllib, os
           mold = os.environ['MOLD_VAR']
           with open(f'{mold}/mold.toml', 'rb') as f:
               data = tomllib.load(f)
-          print(json.dumps({
-              'source_type': data['source']['type'],
-              'family': data['metadata']['family'],
-              'version': data['metadata']['version'],
-              'glibc_min': data.get('source', {}).get('glibc_min', '')
-          }))
+          print(data['source']['type'])
           ")
-            SOURCE_TYPE=$(echo "$MOLD_INFO" | jq -r '.source_type')
-            FAMILY=$(echo "$MOLD_INFO" | jq -r '.family')
-            VERSION=$(echo "$MOLD_INFO" | jq -r '.version')
-            GLIBC_MIN=$(echo "$MOLD_INFO" | jq -r '.glibc_min')
 
             echo "Detected: ${mold} (${SOURCE_TYPE})"
 
             if [[ "$SOURCE_TYPE" == "fetch" ]]; then
-              HAS_FETCH=true
-              while IFS= read -r platform_entry; do
-                [[ -z "$platform_entry" ]] && continue
-                PLAT=$(echo "$platform_entry" | jq -r '.platform')
-                ARCH=$(echo "$platform_entry" | jq -r '.arch')
-                RUNNER=$(echo "$platform_entry" | jq -r '.runner')
-                CONTAINER=$(echo "$platform_entry" | jq -r '.container // ""')
-
-                # Override container for Linux platforms when glibc_min is specified
-                if [[ -n "$GLIBC_MIN" && -n "$CONTAINER" && "$PLAT" == "linux" ]]; then
-                  RESOLVED_CONTAINER=$(echo "$GLIBC_MAP" | GLIBC_MIN_VAR="$GLIBC_MIN" python3 -c "
-          import json, sys, os
-          glibc_min = os.environ['GLIBC_MIN_VAR']
-          glibc_map = json.load(sys.stdin)
-          default_info = glibc_map.get('default', {})
-          default_container = default_info.get('container', 'ubuntu:20.04')
-
-          # Find the lowest glibc version in the map that satisfies glibc_min
-          candidates = []
-          for ver, container in glibc_map.items():
-              if ver == 'default' or not isinstance(container, str):
-                  continue
-              ver_tuple = tuple(int(x) for x in ver.split('.'))
-              min_tuple = tuple(int(x) for x in glibc_min.split('.'))
-              if ver_tuple >= min_tuple:
-                  candidates.append((ver_tuple, container))
-
-          if candidates:
-              candidates.sort()
-              print(candidates[0][1])
-          else:
-              print(default_container)
-          ")
-                  CONTAINER="$RESOLVED_CONTAINER"
-                  echo "  Container override for ${PLAT}-${ARCH}: ${CONTAINER} (glibc_min=${GLIBC_MIN})"
-                fi
-
-                ENTRY=$(jq -n \
-                  --arg mold "$mold" \
-                  --arg family "$FAMILY" \
-                  --arg version "$VERSION" \
-                  --arg platform "$PLAT" \
-                  --arg arch "$ARCH" \
-                  --arg runner "$RUNNER" \
-                  --arg container "$CONTAINER" \
-                  '{mold: $mold, family: $family, version: $version,
-                    platform: $platform, arch: $arch,
-                    runner: $runner, container: $container}')
-                FETCH_ENTRIES+=("$ENTRY")
-              done <<< "$TIER1_PLATFORMS"
+              echo "::notice::Fetch type: ${mold} — validated in pr-validation.yml only (ADR-0035)"
             elif [[ "$SOURCE_TYPE" == "build" ]]; then
               HAS_BUILD=true
               echo "::notice::Build type detected: ${mold} (deferred to TSK-0003)"
             fi
           done
 
-          echo "has_fetch_targets=${HAS_FETCH}" >> "$GITHUB_OUTPUT"
           echo "has_build_targets=${HAS_BUILD}" >> "$GITHUB_OUTPUT"
 
-          if [[ "$HAS_FETCH" == "true" ]]; then
-            FETCH_MATRIX=$(printf '%s\n' "${FETCH_ENTRIES[@]}" | jq -cs '{include: .}')
-          else
-            FETCH_MATRIX='{"include":[]}'
-          fi
-          echo "fetch_matrix=${FETCH_MATRIX}" >> "$GITHUB_OUTPUT"
-          echo "Fetch matrix: ${FETCH_MATRIX}"
-
-  cast-fetch:
-    needs: detect-build-targets
-    if: needs.detect-build-targets.outputs.has_fetch_targets == 'true'
-    runs-on: ${{ matrix.runner }}
-    container: ${{ matrix.container || '' }}
-    timeout-minutes: 60
-    strategy:
-      matrix: ${{ fromJSON(needs.detect-build-targets.outputs.fetch_matrix) }}
-      fail-fast: false
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Install system prerequisites (Linux container)
-        if: matrix.container
-        run: |
-          apt-get update -qq
-          apt-get install -y -qq \
-            ca-certificates curl jq xz-utils patch file binutils \
-            python3-pip libc6-dev libxml2
-          pip3 install tomli
-
-      - name: Set up Python
-        if: ${{ !matrix.container }}
-        uses: actions/setup-python@v5
-        with:
-          python-version: '3.12'
-
-      - name: Build ingot
-        env:
-          OUTPUT_DIR: ./output
-          MOLD: ${{ matrix.mold }}
-          PLATFORM: ${{ matrix.platform }}
-          ARCH: ${{ matrix.arch }}
-        run: |
-          chmod +x scripts/cast-ingot.sh scripts/smoke-test.sh
-          mkdir -p "${OUTPUT_DIR}"
-          scripts/cast-ingot.sh "$MOLD" "$PLATFORM" "$ARCH"
-
-      - name: Upload artifacts
-        uses: actions/upload-artifact@v4
-        with:
-          name: ingot-${{ matrix.family }}-${{ matrix.version }}-${{ matrix.platform }}-${{ matrix.arch }}
-          path: |
-            output/*.tar.xz
-            output/*.tar.xz.sha256
-            output/ingot-metadata-*.json
-          retention-days: 3
-
-  # upload-release: Consolidate artifacts and publish to GitHub Releases.
+  # upload-package: Consolidate artifacts and publish to ghcr.io (OCI).
   #
   # Design intent (DSN-0004 DD-10):
-  #   needs does NOT include intermediate build stages (cast-build-configure,
-  #   cast-build-make). Their failure cascades via GHA defaults to skip
-  #   cast-build-package. Including them in needs would block fetch-type
-  #   releases on build-type failures, breaking per-mold independence.
   #   Partial release prevention is handled by per-mold completeness checks
   #   within this job's steps.
   #
-  # Phase 006 scope: fetch type only. cast-build-package is added by TSK-0003.
-  upload-release:
-    needs: [detect-build-targets, cast-fetch]
-    if: |
-      needs.detect-build-targets.outputs.has_fetch_targets == 'true'
-      && !contains(needs.*.result, 'failure')
-      && !contains(needs.*.result, 'cancelled')
+  # ADR-0035: fetch-type ingot production removed. cast-fetch job deleted.
+  # TSK-0003: build-type pipeline (cast-build-*) will be added here.
+  # Until TSK-0003 is implemented, this job is disabled.
+  upload-package:
+    needs: [detect-build-targets]
+    # Disabled until build-type pipeline is implemented (TSK-0003).
+    if: false
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
@@ -344,7 +204,7 @@ jobs:
         run: |
           set -euo pipefail
 
-          MANIFEST_DIR="release-manifests"
+          MANIFEST_DIR="package-manifests"
           mkdir -p "$MANIFEST_DIR"
 
           # Collect all ingot-metadata JSON files
@@ -394,175 +254,23 @@ jobs:
             FAMILY=$(jq -r '.family' "$FIRST_META")
             VERSION=$(jq -r '.version' "$FIRST_META")
 
-            # === Determine revision tag (ADR-0025) ===
-            BASE_TAG="${FAMILY}-${VERSION}"
-            EXISTING_TAGS=$(gh release list --limit 1000 --json tagName --jq '.[].tagName' 2>/dev/null \
-              | grep -xE "${BASE_TAG}(-r[0-9]+)?" || true)
-
-            if [[ -z "$EXISTING_TAGS" ]]; then
-              # First build: use base tag
-              RELEASE_TAG="${BASE_TAG}"
-            else
-              # Find max revision number (base tag = implicit r1)
-              MAX_REV=1
-              while IFS= read -r tag; do
-                [[ -z "$tag" ]] && continue
-                if [[ "$tag" == "${BASE_TAG}-r"* ]]; then
-                  REV="${tag#"${BASE_TAG}-r"}"
-                  if [[ "$REV" =~ ^[0-9]+$ && "$REV" -gt "$MAX_REV" ]]; then
-                    MAX_REV="$REV"
-                  fi
-                fi
-              done <<< "$EXISTING_TAGS"
-              NEXT_REV=$((MAX_REV + 1))
-              RELEASE_TAG="${BASE_TAG}-r${NEXT_REV}"
-            fi
-
-            echo "Release tag: ${RELEASE_TAG}"
-
-            # === Collect asset files ===
-            ASSET_FILES=()
-            ASSET_ENTRIES=()
-            PLATFORMS_LIST=()
-
-            for meta_file in "${META_LIST[@]}"; do
-              INGOT_FILE=$(jq -r '.ingot_file' "$meta_file")
-              PLATFORM=$(jq -r '.platform' "$meta_file")
-              ARCH=$(jq -r '.arch' "$meta_file")
-
-              # Find ingot and sha256 files in artifacts/
-              INGOT_PATH=$(find artifacts/ -name "${INGOT_FILE}" -type f | head -1)
-              SHA256_PATH=$(find artifacts/ -name "${INGOT_FILE}.sha256" -type f | head -1)
-
-              if [[ -z "$INGOT_PATH" || ! -f "$INGOT_PATH" ]]; then
-                echo "::warning::Ingot file not found: ${INGOT_FILE}"
-                continue
-              fi
-
-              ASSET_FILES+=("${INGOT_PATH}")
-              [[ -n "$SHA256_PATH" && -f "$SHA256_PATH" ]] && ASSET_FILES+=("${SHA256_PATH}")
-
-              ENTRY=$(jq -n \
-                --arg ingot_file "$INGOT_FILE" \
-                --arg platform "$PLATFORM" \
-                --arg arch "$ARCH" \
-                '{ingot_file: $ingot_file, platform: $platform, arch: $arch}')
-              ASSET_ENTRIES+=("$ENTRY")
-              PLATFORMS_LIST+=("${PLATFORM}-${ARCH}")
-            done
-
-            if [[ ${#ASSET_FILES[@]} -eq 0 ]]; then
-              echo "::warning::No asset files found for ${key}"
-              continue
-            fi
-
-            # === Build release notes ===
-            MOLD_DIR="molds/${FAMILY}/${VERSION}"
-            SOURCE_TYPE=$(jq -r '.source_type' "$FIRST_META")
-
-            NOTES_FILE=$(mktemp)
-            {
-              echo "## ${FAMILY} ${VERSION}"
-              echo ""
-              echo "### Platforms"
-              for p in "${PLATFORMS_LIST[@]}"; do
-                echo "- ${p}"
-              done
-              echo ""
-              echo "### Build Information"
-              echo ""
-              echo "- Source type: ${SOURCE_TYPE}"
-              echo "- Mold definition: [\`${MOLD_DIR}/mold.toml\`](${MOLD_DIR}/mold.toml)"
-              echo "- Build script: [\`scripts/cast-ingot.sh\`](scripts/cast-ingot.sh)"
-
-              # Source URLs and license info from mold.toml
-              if [[ -f "${MOLD_DIR}/mold.toml" ]]; then
-                echo ""
-                echo "### Source"
-                echo ""
-                MOLD_DIR_VAR="$MOLD_DIR" python3 -c "
-          import tomllib, os
-          mold_dir = os.environ['MOLD_DIR_VAR']
-          with open(f'{mold_dir}/mold.toml', 'rb') as f:
-              data = tomllib.load(f)
-          source = data.get('source', {})
-          if source.get('type') == 'fetch':
-              for b in source.get('binaries', []):
-                  print(f\"- {b['platform']}-{b['arch']}: \`{b['url']}\`\")
-          elif source.get('type') == 'build':
-              build = source.get('build', {})
-              if 'source_url' in build:
-                  print(f\"- Source: \`{build['source_url']}\`\")
-          "
-
-                echo ""
-                echo "### License"
-                echo ""
-                MOLD_DIR_VAR="$MOLD_DIR" python3 -c "
-          import tomllib, os
-          mold_dir = os.environ['MOLD_DIR_VAR']
-          with open(f'{mold_dir}/mold.toml', 'rb') as f:
-              data = tomllib.load(f)
-          meta = data.get('metadata', {})
-          print(f\"- {meta.get('license', 'Unknown')}\")
-          for lf in meta.get('license_files', []):
-              print(f\"- Included: \`{lf}\`\")
-          "
-              fi
-            } > "$NOTES_FILE"
-
-            # === Create GitHub Release ===
-            set +e
-            gh release create "${RELEASE_TAG}" \
-              --title "${FAMILY} ${VERSION}" \
-              --notes-file "$NOTES_FILE" \
-              "${ASSET_FILES[@]}"
-            RELEASE_EXIT=$?
-            set -e
-
-            rm -f "$NOTES_FILE"
-
-            if [[ "$RELEASE_EXIT" -ne 0 ]]; then
-              echo "::error::Failed to create release ${RELEASE_TAG} (exit ${RELEASE_EXIT})"
-              FAILURE_COUNT=$((FAILURE_COUNT + 1))
-              continue
-            fi
-
-            echo "Release created: ${RELEASE_TAG}"
-
-            # === Generate release-manifest JSON (DD-09) ===
-            CREATED_AT=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
-            ASSETS_JSON=$(printf '%s\n' "${ASSET_ENTRIES[@]}" | jq -s '.')
-
-            jq -n \
-              --arg family "$FAMILY" \
-              --arg version "$VERSION" \
-              --arg release_tag "$RELEASE_TAG" \
-              --argjson assets "$ASSETS_JSON" \
-              --arg created_at "$CREATED_AT" \
-              '{
-                family: $family,
-                version: $version,
-                release_tag: $release_tag,
-                assets: $assets,
-                created_at: $created_at
-              }' > "${MANIFEST_DIR}/release-manifest-${FAMILY}-${VERSION}.json"
-
-            echo "Generated: release-manifest-${FAMILY}-${VERSION}.json"
+            # TODO (TSK-0003/TSK-0009): Implement oras push to ghcr.io
+            # Replace gh release create with oras push (ADR-0037).
+            echo "::notice::Build-type publishing via oras push is not yet implemented"
             RELEASE_COUNT=$((RELEASE_COUNT + 1))
           done
 
           echo ""
-          echo "=== Summary: ${RELEASE_COUNT} release(s) created, ${FAILURE_COUNT} failure(s) ==="
+          echo "=== Summary: ${RELEASE_COUNT} release(s) processed, ${FAILURE_COUNT} failure(s) ==="
 
           if [[ "$FAILURE_COUNT" -gt 0 ]]; then
             exit 1
           fi
 
-      - name: Upload release manifests
+      - name: Upload package manifests
         uses: actions/upload-artifact@v4
         with:
-          name: release-manifest
-          path: release-manifests/
+          name: package-manifest
+          path: package-manifests/
           retention-days: 3
           if-no-files-found: warn

@@ -1,5 +1,11 @@
 #!/usr/bin/env bash
-# cast-ingot.sh — Build an ingot from a mold definition
+# cast-ingot.sh — Validate a mold definition by downloading and verifying the binary
+#
+# For fetch-type molds, this script downloads the upstream binary, verifies its
+# integrity (SHA256), checks the layout, license files, glibc compatibility,
+# and runs a smoke test. No ingot archive is produced (ADR-0035).
+#
+# For build-type molds, ingot production is handled separately (TSK-0003).
 #
 # Usage: cast-ingot.sh <mold-directory> <platform> <arch>
 #
@@ -8,8 +14,8 @@
 #   OUTPUT_DIR  — Output directory for ingot artifacts (default: ./output)
 #
 # Exit codes:
-#   0 = Ingot built successfully
-#   1 = Build error (smoke test failure)
+#   0 = Validation passed
+#   1 = Test error (smoke test failure)
 #   2 = Validation error (SHA256 mismatch, missing license, unsupported platform)
 #   3 = Internal error (missing tools, unsupported source type)
 
@@ -87,7 +93,7 @@ RUN_DIR=$(mktemp -d "${BASE_WORK_DIR}/run-XXXXXXXX")
 # --- Pre-flight checks ---
 echo -e "${BOLD}Pre-flight checks${RESET}"
 
-for cmd in python3 curl jq tar xz patch; do
+for cmd in python3 curl jq tar xz; do
     if ! command -v "$cmd" &>/dev/null; then
         echo "Error: $cmd is not installed"
         exit 3
@@ -171,6 +177,13 @@ fi
 if [[ "$SOURCE_TYPE" != "fetch" ]]; then
     fail "Unknown source type: ${SOURCE_TYPE}"
     exit 3
+fi
+
+# Reject fetch-type molds with patches defined (ADR-0035: patches removed for fetch type)
+PATCHES_COUNT=$(jq '.patches // [] | length' "$MOLD_JSON")
+if [[ "$PATCHES_COUNT" -gt 0 ]]; then
+    fail "Fetch-type molds must not define patches (ADR-0035)"
+    exit 2
 fi
 
 pass "Parsed: ${FAMILY} ${VERSION} (source.type = ${SOURCE_TYPE})"
@@ -318,58 +331,8 @@ fi
 pass "Extracted to working directory"
 echo ""
 
-# --- Step 6: Apply patches ---
-echo -e "${BOLD}6. Apply patches${RESET}"
-
-PATCHES_COUNT=$(jq '.patches // [] | length' "$MOLD_JSON")
-
-if [[ "$PATCHES_COUNT" -eq 0 ]]; then
-    info "No patches defined"
-else
-    MOLD_DIR_REAL=$(resolve_path "$MOLD_DIR")
-    for idx in $(seq 0 $((PATCHES_COUNT - 1))); do
-        PATCH_FILE=$(jq -r ".patches[$idx].file" "$MOLD_JSON")
-        PATCH_DESC=$(jq -r ".patches[$idx].description // empty" "$MOLD_JSON")
-
-        # Path traversal check
-        if [[ "$PATCH_FILE" == /* || "$PATCH_FILE" == ../* || \
-              "$PATCH_FILE" == */../* || "$PATCH_FILE" == */.. || \
-              "$PATCH_FILE" == .. ]]; then
-            fail "Patch path contains traversal or is absolute: ${PATCH_FILE}"
-            exit 2
-        fi
-
-        PATCH_PATH="${MOLD_DIR}/${PATCH_FILE}"
-        if [[ ! -f "$PATCH_PATH" ]]; then
-            fail "Patch file not found: ${PATCH_FILE}"
-            exit 2
-        fi
-
-        # Verify canonical path is within the mold directory
-        PATCH_REAL=$(resolve_path "$PATCH_PATH")
-        if [[ "$PATCH_REAL" != "${MOLD_DIR_REAL}/"* ]]; then
-            fail "Patch path escapes mold directory: ${PATCH_FILE}"
-            exit 2
-        fi
-
-        set +e
-        patch -d "$CONTENT_DIR" -p1 -F 0 < "$PATCH_PATH" 2>"${RUN_DIR}/patch_stderr"
-        PATCH_EXIT=$?
-        set -e
-
-        if [[ "$PATCH_EXIT" -ne 0 ]]; then
-            PATCH_ERROR=$(cat "${RUN_DIR}/patch_stderr")
-            fail "Patch failed: ${PATCH_FILE}: ${PATCH_ERROR}"
-            exit 1
-        fi
-
-        pass "Applied patch: ${PATCH_FILE}${PATCH_DESC:+ (${PATCH_DESC})}"
-    done
-fi
-echo ""
-
-# --- Step 7: Layout conversion ---
-echo -e "${BOLD}7. Layout conversion${RESET}"
+# --- Step 6: Layout conversion ---
+echo -e "${BOLD}6. Layout conversion${RESET}"
 
 STAGING_DIR="${RUN_DIR}/staging"
 mkdir -p "$STAGING_DIR"
@@ -391,8 +354,8 @@ done
 pass "Layout verified: ${LAYOUT_DIRS[*]}"
 echo ""
 
-# --- Step 8: License file inclusion ---
-echo -e "${BOLD}8. License file inclusion${RESET}"
+# --- Step 7: License file inclusion ---
+echo -e "${BOLD}7. License file inclusion${RESET}"
 
 LICENSE_COUNT=$(jq '.metadata.license_files // [] | length' "$MOLD_JSON")
 
@@ -430,8 +393,8 @@ for idx in $(seq 0 $((LICENSE_COUNT - 1))); do
 done
 echo ""
 
-# --- Step 9: glibc compatibility check ---
-echo -e "${BOLD}9. glibc compatibility check${RESET}"
+# --- Step 8: glibc compatibility check ---
+echo -e "${BOLD}8. glibc compatibility check${RESET}"
 
 GLIBC_VERSION=""
 
@@ -480,84 +443,8 @@ else
 fi
 echo ""
 
-# --- Step 10: Generate metadata.toml ---
-echo -e "${BOLD}10. Generate metadata.toml${RESET}"
-
-BUILT_AT=$(python3 -c "from datetime import datetime, timezone; print(datetime.now(timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ'))")
-
-python3 -c "
-import sys
-
-family = sys.argv[1]
-version = sys.argv[2]
-platform = sys.argv[3]
-arch = sys.argv[4]
-glibc = sys.argv[5]
-built_at = sys.argv[6]
-source_type = sys.argv[7]
-output = sys.argv[8]
-
-lines = ['[metadata]']
-lines.append(f'family = \"{family}\"')
-lines.append(f'version = \"{version}\"')
-lines.append(f'platform = \"{platform}\"')
-lines.append(f'arch = \"{arch}\"')
-if glibc:
-    lines.append(f'glibc_version = \"{glibc}\"')
-lines.append(f'built_at = \"{built_at}\"')
-lines.append(f'source_type = \"{source_type}\"')
-
-with open(output, 'w') as f:
-    f.write('\n'.join(lines) + '\n')
-" "$FAMILY" "$VERSION" "$PLATFORM" "$ARCH" "$GLIBC_VERSION" "$BUILT_AT" "fetch" \
-    "${STAGING_DIR}/metadata.toml"
-
-pass "Generated metadata.toml"
-echo ""
-
-# --- Step 11: Create tar.xz archive ---
-# SKIP_PACKAGE=1 skips archive creation, checksum, and metadata JSON (steps 11-12, 14).
-# Used ONLY by Light Build Verification in pr-validation.yml where the purpose is
-# smoke test verification, not artifact production.
-# WARNING: Do NOT set SKIP_PACKAGE in ingot-cast.yml or any production workflow.
-if [[ "${SKIP_PACKAGE:-0}" == "1" ]]; then
-    echo -e "${BOLD}11. Create tar.xz archive${RESET}"
-    info "Skipped (SKIP_PACKAGE=1)"
-    echo ""
-
-    echo -e "${BOLD}12. Generate SHA256 checksum${RESET}"
-    info "Skipped (SKIP_PACKAGE=1)"
-    echo ""
-
-    INGOT_FILE="${FAMILY}-${VERSION}-${PLATFORM}-${ARCH}.tar.xz"
-    INGOT_PATH="(skipped)"
-    INGOT_SHA256="skipped"
-else
-    echo -e "${BOLD}11. Create tar.xz archive${RESET}"
-
-    INGOT_FILE="${FAMILY}-${VERSION}-${PLATFORM}-${ARCH}.tar.xz"
-    INGOT_PATH="${OUTPUT_DIR}/${INGOT_FILE}"
-
-    # Use multi-threaded xz compression (-T0 = all available cores) to avoid
-    # timeouts on large toolchains (e.g., LLVM ~5GB takes 30+ min single-threaded).
-    tar -cf - -C "$STAGING_DIR" . | xz -T0 > "$INGOT_PATH"
-
-    INGOT_SIZE=$(wc -c < "$INGOT_PATH" | tr -d ' ')
-    pass "Created ${INGOT_FILE} (${INGOT_SIZE} bytes)"
-    echo ""
-
-    # --- Step 12: Generate SHA256 checksum ---
-    echo -e "${BOLD}12. Generate SHA256 checksum${RESET}"
-
-    INGOT_SHA256=$(compute_sha256 "$INGOT_PATH")
-    echo "$INGOT_SHA256" > "${INGOT_PATH}.sha256"
-
-    pass "SHA256: ${INGOT_SHA256}"
-    echo ""
-fi
-
-# --- Step 13: Smoke test ---
-echo -e "${BOLD}13. Smoke test${RESET}"
+# --- Step 9: Smoke test ---
+echo -e "${BOLD}9. Smoke test${RESET}"
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 SMOKE_TEST="${SCRIPT_DIR}/smoke-test.sh"
@@ -581,67 +468,19 @@ fi
 pass "Smoke test passed"
 echo ""
 
-# --- Step 14: Generate ingot-metadata JSON ---
-if [[ "${SKIP_PACKAGE:-0}" == "1" ]]; then
-    echo -e "${BOLD}14. Generate ingot-metadata JSON${RESET}"
-    info "Skipped (SKIP_PACKAGE=1)"
-    echo ""
-
-    METADATA_JSON="(skipped)"
-else
-    echo -e "${BOLD}14. Generate ingot-metadata JSON${RESET}"
-
-    METADATA_JSON="${OUTPUT_DIR}/ingot-metadata-${FAMILY}-${VERSION}-${PLATFORM}-${ARCH}.json"
-
-    jq -n \
-        --arg family "$FAMILY" \
-        --arg version "$VERSION" \
-        --arg platform "$PLATFORM" \
-        --arg arch "$ARCH" \
-        --arg ingot_file "$INGOT_FILE" \
-        --arg sha256 "$INGOT_SHA256" \
-        --arg source_type "fetch" \
-        --arg glibc_version "$GLIBC_VERSION" \
-        --arg built_at "$BUILT_AT" \
-        '{
-            family: $family,
-            version: $version,
-            platform: $platform,
-            arch: $arch,
-            ingot_file: $ingot_file,
-            sha256: $sha256,
-            source_type: $source_type,
-            built_at: $built_at
-        } + if $glibc_version != "" then {glibc_version: $glibc_version} else {} end' \
-        > "$METADATA_JSON"
-
-    pass "Generated: $(basename "$METADATA_JSON")"
-    echo ""
-fi
-
 # --- Summary ---
 echo -e "${BOLD}Summary${RESET}"
-if [[ "${SKIP_PACKAGE:-0}" == "1" ]]; then
-    echo -e "  ${GREEN}Smoke test passed (LBV mode — packaging skipped).${RESET}"
-    add_summary ""
-    add_summary "- :white_check_mark: Smoke test passed (LBV mode)"
-    add_summary ""
-    add_summary "**Result: :white_check_mark: Light Build Verification passed**"
-else
-    echo -e "  ${GREEN}Ingot built successfully.${RESET}"
-    echo -e "  Artifacts:"
-    echo -e "    ${INGOT_PATH}"
-    echo -e "    ${INGOT_PATH}.sha256"
-    echo -e "    ${METADATA_JSON}"
+echo -e "  ${GREEN}Validation passed.${RESET}"
 
-    add_summary ""
-    add_summary "- :white_check_mark: Ingot: ${INGOT_FILE}"
-    add_summary "- :white_check_mark: SHA256: ${INGOT_SHA256}"
-    add_summary "- :white_check_mark: Smoke test passed"
-    add_summary ""
-    add_summary "**Result: :white_check_mark: Ingot built successfully**"
+add_summary ""
+add_summary "- :white_check_mark: SHA256 verified"
+add_summary "- :white_check_mark: Layout verified: ${LAYOUT_DIRS[*]}"
+if [[ -n "$GLIBC_VERSION" ]]; then
+    add_summary "- :white_check_mark: glibc requirement: ${GLIBC_VERSION}"
 fi
-add_summary "**Result: :white_check_mark: Ingot built successfully**"
+add_summary "- :white_check_mark: Smoke test passed"
+add_summary ""
+add_summary "**Result: :white_check_mark: Validation passed**"
 
 if [[ -n "${GITHUB_STEP_SUMMARY:-}" ]]; then
     echo "$SUMMARY_MD" >> "$GITHUB_STEP_SUMMARY"
