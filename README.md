@@ -24,10 +24,10 @@ scrap-toolchain/
 ## Pipeline Overview
 
 1. A contributor submits a PR adding or updating a `molds/{family}/{version}/mold.toml`
-2. **PR Validation** — the mold is validated against `schema/mold-v1.schema.json`, and **fetch-type** molds are verified on all Tier 1 platforms (download, SHA256, layout, license, smoke test)
+2. **PR Validation** — the mold is validated against `schema/mold-v1.schema.json`, and **fetch-type** molds are verified on Tier 1 platforms where binaries are defined (Linux platforms are mandatory; macOS is verified when a binary is available)
 3. On merge, **Ingot Cast** — CI processes the mold:
    - **fetch** molds: no artifacts produced (validation already done in step 2)
-   - **build** molds: CI builds the toolchain and uploads ingots to the distribution platform
+   - **build** molds: CI builds the toolchain and uploads ingots to the distribution platform (not yet implemented)
 4. **Index Update** — `index.toml` is regenerated from mold definitions and build artifacts, then committed to the repository
 
 ## Mold Types

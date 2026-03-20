@@ -398,7 +398,7 @@ for notice_name in NOTICE NOTICE.txt NOTICE.md; do
     NOTICE_PATH=$(find "$STAGING_DIR" -maxdepth 2 -name "$notice_name" -type f 2>/dev/null | head -1)
     if [[ -n "$NOTICE_PATH" ]]; then
         NOTICE_BASENAME=$(basename "$NOTICE_PATH")
-        if ! echo "$LICENSE_FILES_LIST" | grep -qxF "$NOTICE_BASENAME"; then
+        if ! printf '%s\n' "$LICENSE_FILES_LIST" | grep -qxF "$NOTICE_BASENAME"; then
             warn "NOTICE file found (${NOTICE_BASENAME}) but not listed in metadata.license_files"
             add_summary "- :warning: NOTICE file found but not in license_files: ${NOTICE_BASENAME}"
         fi
