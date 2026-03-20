@@ -54,8 +54,8 @@ jobs:
 
           CHANGED_FILES=$(git diff --name-only "${BASE_SHA}" "${HEAD_SHA}")
 
-          # Check if infrastructure files changed
-          INFRA_CHANGED=$(echo "$CHANGED_FILES" | grep -E '^(schema/|scripts/|platforms\.toml)' || true)
+          # Check if infrastructure files changed (triggers full validation of all molds)
+          INFRA_CHANGED=$(echo "$CHANGED_FILES" | grep -E '^(schema/|scripts/|platforms\.toml|\.github/workflows/)' || true)
 
           # Extract unique mold directories
           MOLD_DIRS=$(echo "$CHANGED_FILES" \
