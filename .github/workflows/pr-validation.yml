@@ -7,7 +7,7 @@ on:
       - 'schema/**'
       - 'scripts/**'
       - 'platforms.toml'
-      - '.github/workflows/pr-validation.yml'
+      - '.github/workflows/**'
 
 permissions:
   contents: read
@@ -216,7 +216,6 @@ jobs:
 
           echo "has_fetch_targets=${HAS_FETCH}" >> "$GITHUB_OUTPUT"
           echo "has_build_targets=${HAS_BUILD}" >> "$GITHUB_OUTPUT"
-          fi
           echo "fetch_matrix=${FETCH_MATRIX}" >> "$GITHUB_OUTPUT"
 
           if [[ "$HAS_BUILD" == "true" ]]; then
