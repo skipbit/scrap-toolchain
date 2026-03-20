@@ -3,9 +3,9 @@
 #
 # For fetch-type molds, this script downloads the upstream binary, verifies its
 # integrity (SHA256), checks the layout, license files, glibc compatibility,
-# and runs a smoke test. No ingot archive is produced (ADR-0035).
+# and runs a smoke test. No ingot archive is produced.
 #
-# For build-type molds, ingot production is handled separately (TSK-0003).
+# For build-type molds, ingot production is handled separately.
 #
 # Usage: cast-ingot.sh <mold-directory> <platform> <arch>
 #
@@ -179,10 +179,10 @@ if [[ "$SOURCE_TYPE" != "fetch" ]]; then
     exit 3
 fi
 
-# Reject fetch-type molds with patches defined (ADR-0035: patches removed for fetch type)
+# Reject fetch-type molds with patches defined (patches not supported for fetch type)
 PATCHES_COUNT=$(jq '.patches // [] | length' "$MOLD_JSON")
 if [[ "$PATCHES_COUNT" -gt 0 ]]; then
-    fail "Fetch-type molds must not define patches (ADR-0035)"
+    fail "Fetch-type molds must not define patches"
     exit 2
 fi
 
@@ -388,6 +388,19 @@ for idx in $(seq 0 $((LICENSE_COUNT - 1))); do
             fail "License file not found: ${LIC_FILE}"
             add_summary "- :x: Missing license file: ${LIC_FILE}"
             exit 2
+        fi
+    fi
+done
+
+# Check for NOTICE files (Apache 2.0 Section 4(d) compliance)
+LICENSE_FILES_LIST=$(jq -r '.metadata.license_files // [] | .[]' "$MOLD_JSON")
+for notice_name in NOTICE NOTICE.txt NOTICE.md; do
+    NOTICE_PATH=$(find "$STAGING_DIR" -maxdepth 2 -name "$notice_name" -type f 2>/dev/null | head -1)
+    if [[ -n "$NOTICE_PATH" ]]; then
+        NOTICE_BASENAME=$(basename "$NOTICE_PATH")
+        if ! echo "$LICENSE_FILES_LIST" | grep -qxF "$NOTICE_BASENAME"; then
+            warn "NOTICE file found (${NOTICE_BASENAME}) but not listed in metadata.license_files"
+            add_summary "- :warning: NOTICE file found but not in license_files: ${NOTICE_BASENAME}"
         fi
     fi
 done
