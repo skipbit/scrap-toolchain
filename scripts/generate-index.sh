@@ -5,10 +5,11 @@
 #   Run from the repository root directory.
 #
 # Environment variables:
-#   ARTIFACT_DIR      — Directory containing release-manifest and ingot-metadata
-#                       JSON files (primary data source)
-#   GITHUB_TOKEN      — GitHub API token for Releases API access (fallback)
-#   GITHUB_REPOSITORY — GitHub repository in owner/repo format (fallback)
+#   ARTIFACT_DIR      — Directory containing package-manifest and ingot-metadata
+#                       JSON files (primary data source for build-type ingots)
+#   GITHUB_TOKEN      — GitHub token for OCI Registry API authentication (optional;
+#                       anonymous access is used for public packages if unset)
+#   GITHUB_REPOSITORY — GitHub repository in owner/repo format (e.g., skipbit/scrap-toolchain)
 #
 # Exit codes:
 #   0 = Index generated successfully
@@ -50,12 +51,7 @@ add_summary() { SUMMARY_MD+="$1"$'\n'; }
 
 # Cleanup on exit
 TMPDIR_INDEX=""
-cleanup() {
-    if [[ -n "$TMPDIR_INDEX" && -d "$TMPDIR_INDEX" ]]; then
-        rm -rf "$TMPDIR_INDEX"
-    fi
-}
-trap cleanup EXIT
+trap '[[ -n "$TMPDIR_INDEX" && -d "$TMPDIR_INDEX" ]] && rm -rf "$TMPDIR_INDEX"' EXIT
 
 TMPDIR_INDEX=$(mktemp -d)
 
@@ -77,21 +73,22 @@ except ImportError:
     exit 2
 fi
 
-API_AVAILABLE=false
-if [[ -n "$GITHUB_TOKEN" && -n "$GITHUB_REPOSITORY" ]]; then
-    # Validate repository format (owner/repo)
+# OCI Registry API fallback is available when curl exists and repository is known.
+# GITHUB_TOKEN is optional — anonymous access works for public packages.
+OCI_API_AVAILABLE=false
+if [[ -n "$GITHUB_REPOSITORY" ]]; then
     if ! [[ "$GITHUB_REPOSITORY" =~ ^[A-Za-z0-9._-]+/[A-Za-z0-9._-]+$ ]]; then
         warn "Invalid GITHUB_REPOSITORY format: ${GITHUB_REPOSITORY}"
     elif command -v curl &>/dev/null; then
-        API_AVAILABLE=true
+        OCI_API_AVAILABLE=true
     else
-        warn "curl not available; Releases API fallback disabled"
+        warn "curl not available; OCI Registry API fallback disabled"
     fi
 fi
 
-if [[ -z "$ARTIFACT_DIR" && "$API_AVAILABLE" != "true" ]]; then
-    warn "Neither ARTIFACT_DIR nor GitHub API credentials configured"
-    warn "Index will include toolchain metadata only (no ingot download information)"
+if [[ -z "$ARTIFACT_DIR" && "$OCI_API_AVAILABLE" != "true" ]]; then
+    warn "Neither ARTIFACT_DIR nor OCI Registry API available"
+    warn "Index will include toolchain metadata only (no ingot download information for build type)"
 fi
 
 pass "Prerequisites satisfied"
@@ -100,74 +97,72 @@ echo ""
 add_summary "## generate-index"
 add_summary ""
 
-# --- GitHub API helper ---
-# Calls the GitHub REST API with retry logic.
-# Args: $1 = endpoint (relative to https://api.github.com/)
-# Returns: JSON body on stdout, exit 0 on success, exit 1 on failure
-api_call() {
-    local endpoint="$1"
-    local attempt
-    local body_file="${TMPDIR_INDEX}/api_body"
-    for attempt in $(seq 1 "$MAX_API_RETRIES"); do
-        local http_code
-        http_code=$(curl -s --max-time 30 -o "$body_file" -w "%{http_code}" \
-            -H "Authorization: token ${GITHUB_TOKEN}" \
-            -H "Accept: application/vnd.github+json" \
-            "https://api.github.com/${endpoint}" 2>/dev/null) || true
+# --- OCI Registry API helpers ---
 
-        if [[ "$http_code" =~ ^2 ]]; then
+# Acquire an OCI bearer token for the given repository scope.
+# Args: $1 = OCI repository path (e.g., skipbit/scrap-toolchain/gcc)
+# Output: bearer token on stdout (empty on failure)
+oci_get_token() {
+    local repo="$1"
+    local auth_args=()
+    if [[ -n "$GITHUB_TOKEN" ]]; then
+        auth_args=(-u "_:${GITHUB_TOKEN}")
+    fi
+
+    local token
+    token=$(curl -s --max-time 15 "${auth_args[@]}" \
+        "https://ghcr.io/token?scope=repository:${repo}:pull" 2>/dev/null \
+        | jq -r '.token // empty') || true
+    echo "$token"
+}
+
+# Call the OCI Distribution API with retry logic.
+# Args: $1 = OCI repository path, $2 = endpoint (e.g., tags/list, manifests/{ref})
+#        $3 = Accept header (optional, defaults to OCI Index media type)
+# Returns: response body on stdout, exit 0 on success, exit 1 on failure
+oci_api_call() {
+    local repo="$1"
+    local endpoint="$2"
+    local accept="${3:-application/vnd.oci.image.index.v1+json, application/vnd.oci.image.manifest.v1+json}"
+
+    local token
+    token=$(oci_get_token "$repo")
+    if [[ -z "$token" ]]; then
+        return 1
+    fi
+
+    local body_file
+    body_file=$(mktemp "${TMPDIR_INDEX}/oci_body.XXXXXX")
+
+    local attempt http_code
+    for ((attempt = 1; attempt <= MAX_API_RETRIES; attempt++)); do
+        http_code=$(curl -s --max-time 30 -o "$body_file" -w "%{http_code}" \
+            -H "Authorization: Bearer ${token}" \
+            -H "Accept: ${accept}" \
+            "https://ghcr.io/v2/${repo}/${endpoint}" 2>/dev/null) || true
+
+        # Re-acquire token on 401 (expired or invalid)
+        if [[ "$http_code" == "401" && "$attempt" -lt "$MAX_API_RETRIES" ]]; then
+            warn "OCI API ${repo}/${endpoint} returned 401, re-acquiring token..."
+            token=$(oci_get_token "$repo")
+            [[ -z "$token" ]] && break
+            sleep 1
+            continue
+        fi
+
+        if [[ "$http_code" =~ ^2 ]] && jq empty "$body_file" 2>/dev/null; then
             cat "$body_file"
+            rm -f "$body_file"
             return 0
         fi
 
         if [[ "$attempt" -lt "$MAX_API_RETRIES" ]]; then
-            warn "API ${endpoint} returned HTTP ${http_code}, retry ${attempt}/${MAX_API_RETRIES}..."
+            warn "OCI API ${repo}/${endpoint} returned HTTP ${http_code}, retry ${attempt}/${MAX_API_RETRIES}..."
             sleep 2
         fi
     done
+    rm -f "$body_file"
     return 1
-}
-
-# --- Resolve release tag ---
-# Finds the latest release tag for a family-version pair.
-# Checks ARTIFACT_DIR first, then falls back to GitHub API tag scan.
-# Args: $1 = family, $2 = version
-# Output: release tag on stdout (empty if none found)
-resolve_release_tag() {
-    local family="$1" version="$2"
-    local tag_prefix="${family}-${version}"
-
-    # Priority 1: release-manifest in ARTIFACT_DIR
-    if [[ -n "$ARTIFACT_DIR" ]]; then
-        local manifest="${ARTIFACT_DIR}/release-manifest-${family}-${version}.json"
-        if [[ -f "$manifest" ]]; then
-            local tag
-            tag=$(jq -r '.release_tag // empty' "$manifest" 2>/dev/null)
-            if [[ -n "$tag" ]]; then
-                echo "$tag"
-                return 0
-            fi
-        fi
-    fi
-
-    # Fallback: GitHub API tag scan
-    if [[ "$API_AVAILABLE" == "true" ]]; then
-        local tags
-        set +e
-        tags=$(api_call "repos/${GITHUB_REPOSITORY}/tags?per_page=100" 2>/dev/null \
-            | jq -r --arg prefix "$tag_prefix" '[.[].name | select(startswith($prefix))] | sort | .[]' \
-            )
-        set -e
-
-        if [[ -n "$tags" ]]; then
-            echo "$tags" | tail -1
-            return 0
-        fi
-    fi
-
-    # No tag found; use default pattern (initial release)
-    echo "${tag_prefix}"
-    return 0
 }
 
 # --- Generate empty index ---
@@ -183,105 +178,154 @@ print('generator = \"scripts/generate-index.sh\"')
 " > "$INDEX_FILE"
 }
 
-# --- Collect ingot metadata ---
-# Gathers ingot metadata for a family-version pair.
-# Checks ARTIFACT_DIR first, then falls back to GitHub Releases API.
-# Args: $1 = family, $2 = version, $3 = release_tag
-# Output: JSON array of ingot objects on stdout
-collect_ingots() {
-    local family="$1" version="$2" release_tag="$3"
-    local ingots="[]"
+# --- Resolve OCI tag for a build-type mold ---
+# Finds the OCI tag for a family-version pair.
+# Checks ARTIFACT_DIR first, then falls back to OCI Registry API tag listing.
+# Args: $1 = family, $2 = version
+# Output: OCI tag on stdout (e.g., "gcc:14.2.0" or "gcc:14.2.0-r2")
+resolve_oci_tag() {
+    local family="$1" version="$2"
 
-    # Priority 1: ingot-metadata JSON files in ARTIFACT_DIR
+    # Priority 1: package-manifest in ARTIFACT_DIR
     if [[ -n "$ARTIFACT_DIR" ]]; then
-        local meta_files
-        meta_files=$(find "$ARTIFACT_DIR" -name "ingot-metadata-${family}-${version}-*.json" \
-            -type f 2>/dev/null | sort) || true
-
-        if [[ -n "$meta_files" ]]; then
-            while IFS= read -r meta_file; do
-                [[ -n "$meta_file" && -f "$meta_file" ]] || continue
-                local meta
-                meta=$(cat "$meta_file" 2>/dev/null) || continue
-
-                # Validate required fields
-                local has_required
-                has_required=$(echo "$meta" | jq 'has("platform") and has("arch") and has("sha256") and has("ingot_file")' 2>/dev/null)
-                if [[ "$has_required" != "true" ]]; then
-                    warn "Incomplete ingot-metadata: $(basename "$meta_file"); skipping"
-                    continue
-                fi
-
-                # Build ingot entry with download URL
-                if [[ -z "$GITHUB_REPOSITORY" ]]; then
-                    warn "GITHUB_REPOSITORY not set; cannot build download URL for $(basename "$meta_file")"
-                    continue
-                fi
-                local ingot_url
-                ingot_url="https://github.com/${GITHUB_REPOSITORY}/releases/download/${release_tag}/$(echo "$meta" | jq -r '.ingot_file')"
-                local ingot_entry
-                ingot_entry=$(echo "$meta" | jq --arg url "$ingot_url" \
-                    '{platform, arch, url: $url, sha256} + if .glibc_version then {glibc_version} else {} end')
-                ingots=$(echo "$ingots" | jq --argjson entry "$ingot_entry" '. + [$entry]')
-            done <<< "$meta_files"
+        local manifest="${ARTIFACT_DIR}/package-manifest-${family}-${version}.json"
+        if [[ -f "$manifest" ]]; then
+            local tag
+            tag=$(jq -r '.oci_tag // empty' "$manifest" 2>/dev/null)
+            if [[ -n "$tag" ]]; then
+                echo "$tag"
+                return 0
+            fi
         fi
     fi
 
-    # Fallback: GitHub Releases API
-    if [[ $(echo "$ingots" | jq 'length') -eq 0 && "$API_AVAILABLE" == "true" ]]; then
-        local release_data
-        set +e
-        release_data=$(api_call "repos/${GITHUB_REPOSITORY}/releases/tags/${release_tag}" 2>/dev/null)
-        local api_exit=$?
-        set -e
+    # Fallback: OCI Registry API tag listing
+    if [[ "$OCI_API_AVAILABLE" == "true" ]]; then
+        local repo_path="${GITHUB_REPOSITORY}/${family}"
+        local tags_json
+        if tags_json=$(oci_api_call "$repo_path" "tags/list" "application/json"); then
+            # Find the latest revision tag matching this version
+            local version_re
+            version_re=$(printf '%s' "$version" | sed 's/[.]/\\./g')
+            # Find the latest revision tag using numeric sort (lexicographic
+            # sort would rank -r9 after -r10, producing incorrect results).
+            local latest_tag
+            latest_tag=$(jq -r --arg re "^${version_re}(-r[0-9]+)?$" \
+                '[.tags[]? | select(test($re))][]' <<< "$tags_json" \
+                | sort -t'-' -k2 -n | tail -1)
+            if [[ -n "$latest_tag" ]]; then
+                echo "${family}:${latest_tag}"
+                return 0
+            fi
+        fi
+    fi
 
-        if [[ "$api_exit" -eq 0 && -n "$release_data" ]]; then
-            # Parse assets to find ingot tar.xz files
-            local asset_names
-            asset_names=$(echo "$release_data" | jq -r '.assets[].name' 2>/dev/null) || true
+    # No existing tag found; use default (initial version)
+    echo "${family}:${version}"
+    return 0
+}
 
-            while IFS= read -r asset_name; do
-                [[ -n "$asset_name" ]] || continue
-                local platform="" arch=""
-                case "$asset_name" in
-                    "${family}-${version}-linux-x86_64.tar.xz")
-                        platform="linux"; arch="x86_64" ;;
-                    "${family}-${version}-linux-aarch64.tar.xz")
-                        platform="linux"; arch="aarch64" ;;
-                    "${family}-${version}-darwin-aarch64.tar.xz")
-                        platform="darwin"; arch="aarch64" ;;
-                    "${family}-${version}-darwin-x86_64.tar.xz")
-                        platform="darwin"; arch="x86_64" ;;
-                    *)
-                        continue ;;
-                esac
+# --- Collect build-type ingots from package-manifest + ingot-metadata ---
+# Produces OCI reference entries (registry, tag, digest) for build-type molds.
+# Checks ARTIFACT_DIR first, then falls back to OCI Registry API.
+# Args: $1 = family, $2 = version, $3 = oci_tag (e.g., "gcc:14.2.0")
+# Output: JSON array of ingot objects on stdout
+collect_build_ingots() {
+    local family="$1" version="$2" oci_tag="$3"
+    local ingots="[]"
+    local registry="ghcr.io/${GITHUB_REPOSITORY}"
 
-                # Download .sha256 sidecar file
-                local sha256_url="https://github.com/${GITHUB_REPOSITORY}/releases/download/${release_tag}/${asset_name}.sha256"
-                local sha256=""
-                set +e
-                sha256=$(curl -fsSL --max-time 30 "$sha256_url" 2>/dev/null | awk '{print $1}' | head -1)
-                set -e
+    # Priority 1: package-manifest + ingot-metadata in ARTIFACT_DIR
+    if [[ -n "$ARTIFACT_DIR" ]]; then
+        local manifest="${ARTIFACT_DIR}/package-manifest-${family}-${version}.json"
+        if [[ -f "$manifest" ]]; then
+            local asset_count
+            asset_count=$(jq '.assets | length' "$manifest" 2>/dev/null) || asset_count=0
 
-                if [[ -z "$sha256" || ${#sha256} -ne 64 ]]; then
-                    warn "Could not retrieve SHA256 for ${asset_name}; skipping"
+            local i
+            for ((i = 0; i < asset_count; i++)); do
+                local platform arch digest
+                read -r platform arch digest < <(
+                    jq -r --argjson i "$i" \
+                        '[.assets[$i].platform, .assets[$i].arch, .assets[$i].digest] | @tsv' \
+                        "$manifest"
+                )
+
+                if [[ -z "$platform" || -z "$arch" || -z "$digest" ]]; then
+                    warn "Incomplete asset entry in package-manifest (platform=${platform}, arch=${arch}, digest=${digest}); skipping"
                     continue
                 fi
 
-                local download_url="https://github.com/${GITHUB_REPOSITORY}/releases/download/${release_tag}/${asset_name}"
+                # Get glibc_version from ingot-metadata (build-time detection)
+                local glibc_version=""
+                local meta_file="${ARTIFACT_DIR}/ingot-metadata-${family}-${version}-${platform}-${arch}.json"
+                if [[ -f "$meta_file" ]]; then
+                    glibc_version=$(jq -r '.glibc_version // empty' "$meta_file" 2>/dev/null)
+                fi
+
                 local entry
                 entry=$(jq -n \
+                    --arg registry "$registry" \
+                    --arg tag "$oci_tag" \
+                    --arg digest "$digest" \
                     --arg platform "$platform" \
                     --arg arch "$arch" \
-                    --arg url "$download_url" \
-                    --arg sha256 "$sha256" \
-                    '{platform: $platform, arch: $arch, url: $url, sha256: $sha256}')
+                    --arg glibc "$glibc_version" \
+                    '{registry: $registry, tag: $tag, digest: $digest, platform: $platform, arch: $arch}
+                    + if $glibc != "" then {glibc_version: $glibc} else {} end')
 
-                # Add glibc_version for Linux platforms if available
-                # (not available from API fallback; omitted)
+                ingots=$(jq --argjson entry "$entry" '. + [$entry]' <<< "$ingots")
+            done
+        fi
+    fi
 
-                ingots=$(echo "$ingots" | jq --argjson entry "$entry" '. + [$entry]')
-            done <<< "$asset_names"
+    # Fallback: OCI Registry API — resolve tag to get per-platform digests
+    local ingot_count_fb
+    ingot_count_fb=$(jq 'length' <<< "$ingots" 2>/dev/null) || ingot_count_fb=0
+    if [[ "$ingot_count_fb" -eq 0 && "$OCI_API_AVAILABLE" == "true" ]]; then
+        local repo_path="${GITHUB_REPOSITORY}/${family}"
+        # Extract just the version portion from oci_tag (e.g., "gcc:14.2.0" -> "14.2.0")
+        local tag_version="${oci_tag#*:}"
+
+        # Get the OCI Index manifest for this tag
+        local index_manifest
+        if index_manifest=$(oci_api_call "$repo_path" "manifests/${tag_version}"); then
+            # Verify this is an OCI Index (has .manifests array), not a single manifest.
+            # A single-platform manifest has .config + .layers but no .manifests.
+            if ! jq -e 'has("manifests")' <<< "$index_manifest" >/dev/null 2>&1; then
+                warn "OCI manifest for ${family}:${tag_version} is not an Index; cannot extract per-platform digests"
+            else
+            local manifest_count
+            manifest_count=$(jq '.manifests | length' <<< "$index_manifest" 2>/dev/null) || manifest_count=0
+
+            for ((i = 0; i < manifest_count; i++)); do
+                local digest platform arch
+                read -r digest platform arch < <(
+                    jq -r --argjson i "$i" \
+                        '[.manifests[$i].digest, (.manifests[$i].platform.os // ""), (.manifests[$i].platform.architecture // "")] | @tsv' \
+                        <<< "$index_manifest"
+                )
+
+                [[ -z "$digest" || -z "$platform" ]] && continue
+
+                # Map OCI arch names back to scrap naming convention
+                case "$arch" in
+                    amd64) arch="x86_64" ;;
+                    arm64) arch="aarch64" ;;
+                esac
+
+                local entry
+                entry=$(jq -n \
+                    --arg registry "$registry" \
+                    --arg tag "$oci_tag" \
+                    --arg digest "$digest" \
+                    --arg platform "$platform" \
+                    --arg arch "$arch" \
+                    '{registry: $registry, tag: $tag, digest: $digest, platform: $platform, arch: $arch}')
+
+                ingots=$(jq --argjson entry "$entry" '. + [$entry]' <<< "$ingots")
+            done
+            fi  # has("manifests") check
         fi
     fi
 
@@ -289,23 +333,23 @@ collect_ingots() {
 }
 
 # --- Collect fetch-type ingots from mold.toml ---
-# Reads source.binaries[] directly from the parsed mold JSON (ADR-0035).
+# Reads source.binaries[] directly from the parsed mold JSON.
 # No CI artifacts or API calls needed — mold.toml is the single source of truth.
 # Args: $1 = mold JSON (parsed mold.toml as JSON string)
 # Output: JSON array of ingot objects on stdout
 collect_fetch_ingots() {
     local mold_json="$1"
     local glibc_min
-    glibc_min=$(echo "$mold_json" | jq -r '.source.glibc_min // empty')
+    glibc_min=$(jq -r '.source.glibc_min // empty' <<< "$mold_json")
 
-    echo "$mold_json" | jq --arg glibc_min "$glibc_min" '
+    jq --arg glibc_min "$glibc_min" '
         [.source.binaries[] | {
             platform,
             arch,
             url,
             sha256
         } + if (.platform == "linux" and $glibc_min != "") then {glibc_version: $glibc_min} else {} end]
-    '
+    ' <<< "$mold_json"
 }
 
 # --- Step 1: Scan molds ---
@@ -347,8 +391,7 @@ echo -e "${BOLD}2. Process molds${RESET}"
 # Read existing index.toml for fallback (preserve entries on API failure)
 EXISTING_INDEX_JSON=""
 if [[ -f "$INDEX_FILE" ]]; then
-    set +e
-    EXISTING_INDEX_JSON=$(python3 -c "
+    if ! EXISTING_INDEX_JSON=$(python3 -c "
 try:
     import tomllib
 except ImportError:
@@ -357,8 +400,9 @@ import json, sys
 with open(sys.argv[1], 'rb') as f:
     data = tomllib.load(f)
 json.dump(data, sys.stdout)
-" "$INDEX_FILE" 2>/dev/null)
-    set -e
+" "$INDEX_FILE" 2>/dev/null); then
+        EXISTING_INDEX_JSON=""
+    fi
 fi
 
 # Accumulate toolchain data as a JSON array
@@ -369,8 +413,7 @@ MOLD_SKIPPED=0
 
 for mold_path in "${MOLD_PATHS[@]}"; do
     # Parse mold.toml
-    set +e
-    mold_json=$(python3 -c "
+    if ! mold_json=$(python3 -c "
 try:
     import tomllib
 except ImportError:
@@ -379,18 +422,20 @@ import json, sys
 with open(sys.argv[1], 'rb') as f:
     data = tomllib.load(f)
 json.dump(data, sys.stdout)
-" "$mold_path" 2>/dev/null)
-    parse_exit=$?
-    set -e
-
-    if [[ "$parse_exit" -ne 0 || -z "$mold_json" ]]; then
+" "$mold_path" 2>/dev/null); then
         warn "Failed to parse ${mold_path}; skipping"
         MOLD_ERRORS=$((MOLD_ERRORS + 1))
         continue
     fi
 
+    if [[ -z "$mold_json" ]]; then
+        warn "Empty parse result for ${mold_path}; skipping"
+        MOLD_ERRORS=$((MOLD_ERRORS + 1))
+        continue
+    fi
+
     # Check status
-    status=$(echo "$mold_json" | jq -r '.metadata.status // "active"')
+    status=$(jq -r '.metadata.status // "active"' <<< "$mold_json")
     if [[ "$status" == "disabled" ]]; then
         info "Skipping disabled mold: ${mold_path}"
         MOLD_SKIPPED=$((MOLD_SKIPPED + 1))
@@ -398,8 +443,8 @@ json.dump(data, sys.stdout)
     fi
 
     # Extract metadata
-    family=$(echo "$mold_json" | jq -r '.metadata.family // empty')
-    version=$(echo "$mold_json" | jq -r '.metadata.version // empty')
+    family=$(jq -r '.metadata.family // empty' <<< "$mold_json")
+    version=$(jq -r '.metadata.version // empty' <<< "$mold_json")
 
     if [[ -z "$family" || -z "$version" ]]; then
         warn "Missing family or version in ${mold_path}; skipping"
@@ -407,33 +452,35 @@ json.dump(data, sys.stdout)
         continue
     fi
 
-    license_val=$(echo "$mold_json" | jq -r '.metadata.license // empty')
-    source_type=$(echo "$mold_json" | jq -r '.source.type // empty')
-    compiler=$(echo "$mold_json" | jq -r '.metadata.components.compiler // empty')
-    min_scrap=$(echo "$mold_json" | jq -r '.metadata.min_scrap_version // empty')
+    license_val=$(jq -r '.metadata.license // empty' <<< "$mold_json")
+    source_type=$(jq -r '.source.type // empty' <<< "$mold_json")
+    compiler=$(jq -r '.metadata.components.compiler // empty' <<< "$mold_json")
+    min_scrap=$(jq -r '.metadata.min_scrap_version // empty' <<< "$mold_json")
 
     info "Processing: ${family} ${version} (${source_type}, ${status})"
 
-    # Collect ingots based on source type (ADR-0035)
+    # Collect ingots based on source type
     origin=""
     if [[ "$source_type" == "fetch" ]]; then
-        # Fetch type: read directly from mold.toml (mold is SSoT)
+        # Fetch type: read directly from mold.toml (mold is single source of truth)
         ingots=$(collect_fetch_ingots "$mold_json")
         origin="upstream"
         info "Fetch type: reading upstream URLs from mold.toml"
     elif [[ "$source_type" == "build" ]]; then
-        # Build type: resolve from CI artifacts or GitHub API
-        release_tag=$(resolve_release_tag "$family" "$version")
-        info "Release tag: ${release_tag}"
-        ingots=$(collect_ingots "$family" "$version" "$release_tag")
+        # Build type: resolve OCI tag and collect OCI references
+        oci_tag=$(resolve_oci_tag "$family" "$version")
+        info "OCI tag: ${oci_tag}"
+        ingots=$(collect_build_ingots "$family" "$version" "$oci_tag")
         origin="scrap-release"
 
         # Build type: preserve existing entries on API failure
-        ingot_count=$(echo "$ingots" | jq 'length')
+        ingot_count=$(jq 'length' <<< "$ingots" 2>/dev/null) || ingot_count=0
         if [[ "$ingot_count" -eq 0 && -n "$EXISTING_INDEX_JSON" ]]; then
-            existing_ingots=$(echo "$EXISTING_INDEX_JSON" | jq --arg f "$family" --arg v "$version" \
-                '[.toolchains[]? | select(.family == $f and .version == $v) | .ingots[]?] // []' 2>/dev/null) || true
-            if [[ -n "$existing_ingots" && $(echo "$existing_ingots" | jq 'length') -gt 0 ]]; then
+            existing_ingots=$(jq --arg f "$family" --arg v "$version" \
+                '[.toolchains[]? | select(.family == $f and .version == $v) | .ingots[]?] // []' \
+                <<< "$EXISTING_INDEX_JSON" 2>/dev/null) || true
+            existing_count=$(jq 'length' <<< "$existing_ingots" 2>/dev/null) || existing_count=0
+            if [[ -n "$existing_ingots" && "$existing_count" -gt 0 ]]; then
                 ingots="$existing_ingots"
                 info "Preserved existing ingot(s) from current index"
             fi
@@ -444,7 +491,7 @@ json.dump(data, sys.stdout)
         continue
     fi
 
-    ingot_count=$(echo "$ingots" | jq 'length')
+    ingot_count=$(jq 'length' <<< "$ingots" 2>/dev/null) || ingot_count=0
 
     if [[ "$ingot_count" -gt 0 ]]; then
         pass "${family} ${version}: ${ingot_count} ingot(s)"
@@ -475,7 +522,7 @@ json.dump(data, sys.stdout)
         + if $min_scrap != "" then {min_scrap_version: $min_scrap} else {} end
         + {ingots: $ingots}')
 
-    TOOLCHAINS_JSON=$(echo "$TOOLCHAINS_JSON" | jq --argjson tc "$tc_entry" '. + [$tc]')
+    TOOLCHAINS_JSON=$(jq --argjson tc "$tc_entry" '. + [$tc]' <<< "$TOOLCHAINS_JSON")
     MOLD_PROCESSED=$((MOLD_PROCESSED + 1))
 done
 echo ""
@@ -494,7 +541,7 @@ fi
 # --- Step 3: Generate index.toml ---
 echo -e "${BOLD}3. Generate index.toml${RESET}"
 
-echo "$TOOLCHAINS_JSON" | python3 -c "
+python3 -c "
 import json, sys
 from datetime import datetime, timezone
 
@@ -535,13 +582,22 @@ for tc in toolchains:
         lines.append('[[toolchains.ingots]]')
         lines.append(f'platform = \"{esc(ingot[\"platform\"])}\"')
         lines.append(f'arch = \"{esc(ingot[\"arch\"])}\"')
-        lines.append(f'url = \"{esc(ingot[\"url\"])}\"')
-        lines.append(f'sha256 = \"{esc(ingot[\"sha256\"])}\"')
+
+        if 'registry' in ingot:
+            # Build type: OCI reference (registry + tag + digest)
+            lines.append(f'registry = \"{esc(ingot[\"registry\"])}\"')
+            lines.append(f'tag = \"{esc(ingot[\"tag\"])}\"')
+            lines.append(f'digest = \"{esc(ingot[\"digest\"])}\"')
+        else:
+            # Fetch type: direct URL
+            lines.append(f'url = \"{esc(ingot[\"url\"])}\"')
+            lines.append(f'sha256 = \"{esc(ingot[\"sha256\"])}\"')
+
         if ingot.get('glibc_version'):
             lines.append(f'glibc_version = \"{esc(ingot[\"glibc_version\"])}\"')
 
 print('\n'.join(lines) + '\n')
-" > "${TMPDIR_INDEX}/index.toml"
+" <<< "$TOOLCHAINS_JSON" > "${TMPDIR_INDEX}/index.toml"
 
 # Move temp file to final location
 mv "${TMPDIR_INDEX}/index.toml" "$INDEX_FILE"
