@@ -109,14 +109,13 @@ add_summary ""
 # Output: bearer token on stdout (empty on failure)
 oci_get_token() {
     local repo="$1"
-    local auth_header=""
+    local auth_args=()
     if [[ -n "$GITHUB_TOKEN" ]]; then
-        auth_header="-u _:${GITHUB_TOKEN}"
+        auth_args=(-u "_:${GITHUB_TOKEN}")
     fi
 
     local token
-    # shellcheck disable=SC2086
-    token=$(curl -s --max-time 15 $auth_header \
+    token=$(curl -s --max-time 15 "${auth_args[@]}" \
         "https://ghcr.io/token?scope=repository:${repo}:pull" 2>/dev/null \
         | jq -r '.token // empty') || true
     echo "$token"
@@ -137,16 +136,28 @@ oci_api_call() {
         return 1
     fi
 
-    local body_file="${TMPDIR_INDEX}/oci_body"
+    local body_file
+    body_file=$(mktemp "${TMPDIR_INDEX}/oci_body.XXXXXX")
+
     local attempt http_code
-    for attempt in $(seq 1 "$MAX_API_RETRIES"); do
+    for ((attempt = 1; attempt <= MAX_API_RETRIES; attempt++)); do
         http_code=$(curl -s --max-time 30 -o "$body_file" -w "%{http_code}" \
             -H "Authorization: Bearer ${token}" \
             -H "Accept: ${accept}" \
             "https://ghcr.io/v2/${repo}/${endpoint}" 2>/dev/null) || true
 
-        if [[ "$http_code" =~ ^2 ]]; then
+        # Re-acquire token on 401 (expired or invalid)
+        if [[ "$http_code" == "401" && "$attempt" -lt "$MAX_API_RETRIES" ]]; then
+            warn "OCI API ${repo}/${endpoint} returned 401, re-acquiring token..."
+            token=$(oci_get_token "$repo")
+            [[ -z "$token" ]] && break
+            sleep 1
+            continue
+        fi
+
+        if [[ "$http_code" =~ ^2 ]] && jq empty "$body_file" 2>/dev/null; then
             cat "$body_file"
+            rm -f "$body_file"
             return 0
         fi
 
@@ -155,6 +166,7 @@ oci_api_call() {
             sleep 2
         fi
     done
+    rm -f "$body_file"
     return 1
 }
 
@@ -200,9 +212,12 @@ resolve_oci_tag() {
             # Find the latest revision tag matching this version
             local version_re
             version_re=$(printf '%s' "$version" | sed 's/[.]/\\./g')
+            # Find the latest revision tag using numeric sort (lexicographic
+            # sort would rank -r9 after -r10, producing incorrect results).
             local latest_tag
             latest_tag=$(jq -r --arg re "^${version_re}(-r[0-9]+)?$" \
-                '[.tags[]? | select(test($re))] | sort | last // empty' <<< "$tags_json")
+                '[.tags[]? | select(test($re))][]' <<< "$tags_json" \
+                | sort -t'-' -k2 -n | tail -1)
             if [[ -n "$latest_tag" ]]; then
                 echo "${family}:${latest_tag}"
                 return 0
@@ -241,7 +256,8 @@ collect_build_ingots() {
                         "$manifest"
                 )
 
-                if [[ -z "$platform" || -z "$arch" ]]; then
+                if [[ -z "$platform" || -z "$arch" || -z "$digest" ]]; then
+                    warn "Incomplete asset entry in package-manifest (platform=${platform}, arch=${arch}, digest=${digest}); skipping"
                     continue
                 fi
 
@@ -269,7 +285,9 @@ collect_build_ingots() {
     fi
 
     # Fallback: OCI Registry API — resolve tag to get per-platform digests
-    if [[ $(jq 'length' <<< "$ingots") -eq 0 && "$OCI_API_AVAILABLE" == "true" ]]; then
+    local ingot_count_fb
+    ingot_count_fb=$(jq 'length' <<< "$ingots" 2>/dev/null) || ingot_count_fb=0
+    if [[ "$ingot_count_fb" -eq 0 && "$OCI_API_AVAILABLE" == "true" ]]; then
         local repo_path="${GITHUB_REPOSITORY}/${family}"
         # Extract just the version portion from oci_tag (e.g., "gcc:14.2.0" -> "14.2.0")
         local tag_version="${oci_tag#*:}"
@@ -277,7 +295,11 @@ collect_build_ingots() {
         # Get the OCI Index manifest for this tag
         local index_manifest
         if index_manifest=$(oci_api_call "$repo_path" "manifests/${tag_version}"); then
-            # Parse per-platform manifest references from the OCI Index
+            # Verify this is an OCI Index (has .manifests array), not a single manifest.
+            # A single-platform manifest has .config + .layers but no .manifests.
+            if ! jq -e 'has("manifests")' <<< "$index_manifest" >/dev/null 2>&1; then
+                warn "OCI manifest for ${family}:${tag_version} is not an Index; cannot extract per-platform digests"
+            else
             local manifest_count
             manifest_count=$(jq '.manifests | length' <<< "$index_manifest" 2>/dev/null) || manifest_count=0
 
@@ -308,6 +330,7 @@ collect_build_ingots() {
 
                 ingots=$(jq --argjson entry "$entry" '. + [$entry]' <<< "$ingots")
             done
+            fi  # has("manifests") check
         fi
     fi
 
@@ -456,12 +479,13 @@ json.dump(data, sys.stdout)
         origin="scrap-release"
 
         # Build type: preserve existing entries on API failure
-        ingot_count=$(jq 'length' <<< "$ingots")
+        ingot_count=$(jq 'length' <<< "$ingots" 2>/dev/null) || ingot_count=0
         if [[ "$ingot_count" -eq 0 && -n "$EXISTING_INDEX_JSON" ]]; then
             existing_ingots=$(jq --arg f "$family" --arg v "$version" \
                 '[.toolchains[]? | select(.family == $f and .version == $v) | .ingots[]?] // []' \
                 <<< "$EXISTING_INDEX_JSON" 2>/dev/null) || true
-            if [[ -n "$existing_ingots" && $(jq 'length' <<< "$existing_ingots") -gt 0 ]]; then
+            existing_count=$(jq 'length' <<< "$existing_ingots" 2>/dev/null) || existing_count=0
+            if [[ -n "$existing_ingots" && "$existing_count" -gt 0 ]]; then
                 ingots="$existing_ingots"
                 info "Preserved existing ingot(s) from current index"
             fi
@@ -472,7 +496,7 @@ json.dump(data, sys.stdout)
         continue
     fi
 
-    ingot_count=$(jq 'length' <<< "$ingots")
+    ingot_count=$(jq 'length' <<< "$ingots" 2>/dev/null) || ingot_count=0
 
     if [[ "$ingot_count" -gt 0 ]]; then
         pass "${family} ${version}: ${ingot_count} ingot(s)"
