@@ -274,7 +274,13 @@ jobs:
               done <<< "$TIER1_PLATFORMS"
             done
 
-            BUILD_MATRIX=$(printf '%s\n' "${BUILD_ENTRIES[@]}" | jq -cs '{include: .}')
+            if [[ ${#BUILD_ENTRIES[@]} -eq 0 ]]; then
+              echo "::warning::Build-type molds detected but no Tier 1 platform entries generated"
+              HAS_BUILD=false
+              BUILD_MATRIX='{"include":[]}'
+            else
+              BUILD_MATRIX=$(printf '%s\n' "${BUILD_ENTRIES[@]}" | jq -cs '{include: .}')
+            fi
           else
             BUILD_MATRIX='{"include":[]}'
           fi
@@ -354,7 +360,7 @@ jobs:
                   sudo ca-certificates curl jq xz-utils \
                   file binutils python3 python3-pip \
                   make patch gcc g++ tar gzip
-                pip3 install tomli 2>/dev/null || true
+                python3 -c "import tomllib" 2>/dev/null || pip3 install tomli
                 scripts/cast-ingot.sh "${MOLD_ARG}" "${PLATFORM_ARG}" "${ARCH_ARG}"
               '
           else
@@ -431,7 +437,7 @@ jobs:
                   sudo ca-certificates curl jq xz-utils \
                   file binutils python3 python3-pip \
                   make patch gcc g++ tar gzip
-                pip3 install tomli 2>/dev/null || true
+                python3 -c "import tomllib" 2>/dev/null || pip3 install tomli
                 scripts/cast-ingot.sh "${MOLD_ARG}" "${PLATFORM_ARG}" "${ARCH_ARG}"
               '
           else
@@ -497,7 +503,7 @@ jobs:
                   sudo ca-certificates curl jq xz-utils \
                   file binutils python3 python3-pip \
                   make patch gcc g++ tar gzip
-                pip3 install tomli 2>/dev/null || true
+                python3 -c "import tomllib" 2>/dev/null || pip3 install tomli
                 scripts/cast-ingot.sh "${MOLD_ARG}" "${PLATFORM_ARG}" "${ARCH_ARG}"
               '
           else
@@ -763,14 +769,20 @@ jobs:
 
             # --- Set package visibility to public ---
             # ghcr.io packages default to private. Attempt to set public visibility
-            # after successful push. This requires appropriate token permissions;
-            # if it fails (e.g., first-time setup or insufficient permissions),
-            # continue with a warning — the push itself already succeeded.
+            # after successful push. Try org endpoint first (most repos are org-owned),
+            # then fall back to user endpoint. This requires appropriate token
+            # permissions; if both fail, continue with a warning.
             echo "  Setting package visibility to public..."
+            PKG_NAME="${GITHUB_REPOSITORY#*/}%2F${FAMILY}"
+            OWNER="${GITHUB_REPOSITORY_OWNER}"
             if ! gh api --method PUT \
-              "/user/packages/container/$(echo "${GITHUB_REPOSITORY#*/}%2F${FAMILY}" | sed 's|/|%2F|g')/visibility" \
+              "/orgs/${OWNER}/packages/container/${PKG_NAME}/visibility" \
               -f visibility=public 2>/dev/null; then
-              echo "::warning::Could not set package visibility to public for ${FAMILY}. Manual configuration may be required."
+              if ! gh api --method PUT \
+                "/user/packages/container/${PKG_NAME}/visibility" \
+                -f visibility=public 2>/dev/null; then
+                echo "::warning::Could not set package visibility to public for ${FAMILY}. Manual configuration may be required."
+              fi
             fi
 
             # --- Create OCI Index for multi-architecture ---
