@@ -232,14 +232,14 @@ jobs:
             exit 1
           fi
 
-          # Group metadata by family-version
+          # Group metadata by family-version (newline-delimited for robustness)
           declare -A MOLD_META_FILES
 
           for meta_file in "${METADATA_FILES[@]}"; do
             FAMILY=$(jq -r '.family' "$meta_file")
             VERSION=$(jq -r '.version' "$meta_file")
             KEY="${FAMILY}/${VERSION}"
-            MOLD_META_FILES["$KEY"]+="${meta_file} "
+            MOLD_META_FILES["$KEY"]+="${meta_file}"$'\n'
           done
 
           # Read Tier 1 platform count for completeness check
@@ -254,8 +254,11 @@ jobs:
           SKIP_COUNT=0
           FAILURE_COUNT=0
 
-          for key in "${!MOLD_META_FILES[@]}"; do
-            read -ra META_LIST <<< "${MOLD_META_FILES[$key]}"
+          mapfile -t SORTED_KEYS < <(printf '%s\n' "${!MOLD_META_FILES[@]}" | sort)
+          for key in "${SORTED_KEYS[@]}"; do
+            mapfile -t META_LIST <<< "${MOLD_META_FILES[$key]}"
+            # Remove trailing empty element from trailing newline
+            [[ -z "${META_LIST[-1]}" ]] && unset 'META_LIST[-1]'
             PLATFORM_COUNT=${#META_LIST[@]}
 
             echo ""
@@ -272,32 +275,42 @@ jobs:
             FAMILY=$(jq -r '.family' "$FIRST_META")
             VERSION=$(jq -r '.version' "$FIRST_META")
 
+            # Validate FAMILY and VERSION are non-empty and OCI-tag-safe
+            if [[ -z "$FAMILY" || -z "$VERSION" ]]; then
+              echo "::error::Empty family or version in metadata: ${FIRST_META}"
+              FAILURE_COUNT=$((FAILURE_COUNT + 1))
+              continue
+            fi
+            if ! [[ "$FAMILY" =~ ^[a-zA-Z0-9._-]+$ && "$VERSION" =~ ^[a-zA-Z0-9._-]+$ ]]; then
+              echo "::error::Invalid family '${FAMILY}' or version '${VERSION}' for OCI tag"
+              FAILURE_COUNT=$((FAILURE_COUNT + 1))
+              continue
+            fi
+
             # --- Determine OCI revision tag ---
             REPO_REF="${REGISTRY}/${FAMILY}"
 
             # List existing tags. A 404 (repository not yet created) is treated
             # as an empty list — this is the expected state for first-time push.
-            set +e
-            EXISTING_TAGS=$(oras repo tags "$REPO_REF" 2>/dev/null)
-            TAGS_EXIT=$?
-            set -e
-
-            if [[ "$TAGS_EXIT" -ne 0 ]]; then
+            if ! EXISTING_TAGS=$(oras repo tags "$REPO_REF" 2>/dev/null); then
               EXISTING_TAGS=""
             fi
 
             # Find the latest revision for this version.
             # Revision scheme: initial build uses bare version (e.g., 14.2.0),
             # which is implicitly revision 1. First rebuild is -r2, then -r3, etc.
+            # Escape dots in VERSION for regex (14.2.0 -> 14\.2\.0)
+            VERSION_RE="${VERSION//./\\.}"
+
             OCI_TAG="${VERSION}"
-            if echo "$EXISTING_TAGS" | grep -qE "^${VERSION}(-r[0-9]+)?$"; then
-              LATEST_REV=$(echo "$EXISTING_TAGS" \
-                | grep -oE "^${VERSION}(-r[0-9]+)?$" \
-                | sed "s/^${VERSION}//" \
-                | sed 's/^$/0/' \
-                | sed 's/^-r//' \
-                | sort -n \
-                | tail -1)
+            if grep -qE "^${VERSION_RE}(-r[0-9]+)?$" <<< "$EXISTING_TAGS"; then
+              LATEST_REV=0
+              while IFS= read -r tag; do
+                rev="${tag#"$VERSION"}"
+                rev="${rev#-r}"
+                [[ -z "$rev" ]] && rev=0
+                (( rev > LATEST_REV )) && LATEST_REV=$rev
+              done < <(grep -oE "^${VERSION_RE}(-r[0-9]+)?$" <<< "$EXISTING_TAGS")
 
               if [[ "$LATEST_REV" -eq 0 ]]; then
                 # Base tag exists without revision suffix -> implicit r1 -> next is r2
@@ -315,10 +328,10 @@ jobs:
             ASSETS_JSON="[]"
 
             for meta_file in "${META_LIST[@]}"; do
-              PLATFORM=$(jq -r '.platform' "$meta_file")
-              ARCH=$(jq -r '.arch' "$meta_file")
-              INGOT_FILE=$(jq -r '.ingot_file' "$meta_file")
-              GLIBC_VERSION=$(jq -r '.glibc_version // empty' "$meta_file")
+              # Read all fields in a single jq call
+              read -r PLATFORM ARCH INGOT_FILE GLIBC_VERSION < <(
+                jq -r '[.platform, .arch, .ingot_file, (.glibc_version // "")] | @tsv' "$meta_file"
+              )
 
               PLATFORM_TAG="${OCI_TAG}-${PLATFORM}-${ARCH}"
 
@@ -345,35 +358,42 @@ jobs:
                 ANNOTATIONS+=(--annotation "org.skipbit.scrap.glibc_version=${GLIBC_VERSION}")
               fi
 
-              # Push with retry (max 2 attempts)
+              # Push with retry (max 2 attempts).
+              # Capture stdout (JSON) separately from stderr (progress/errors).
               PUSH_OUTPUT=""
               PUSH_EXIT=1
+              PUSH_STDERR=""
               for attempt in 1 2; do
-                set +e
-                PUSH_OUTPUT=$(oras push "${REPO_REF}:${PLATFORM_TAG}" \
+                PUSH_STDERR=$(mktemp)
+                if PUSH_OUTPUT=$(oras push "${REPO_REF}:${PLATFORM_TAG}" \
                   --artifact-type "application/vnd.skipbit.scrap.ingot.v1+tar.xz" \
                   "${ANNOTATIONS[@]}" \
                   "${INGOT_PATH}:application/x-tar+xz" \
-                  --format json 2>&1)
-                PUSH_EXIT=$?
-                set -e
-
-                if [[ "$PUSH_EXIT" -eq 0 ]]; then
+                  --format json 2>"$PUSH_STDERR"); then
+                  PUSH_EXIT=0
+                  rm -f "$PUSH_STDERR"
                   break
                 fi
+                PUSH_EXIT=$?
                 if [[ "$attempt" -lt 2 ]]; then
                   echo "  Push failed (attempt ${attempt}), retrying..."
                   sleep 3
                 fi
+                rm -f "$PUSH_STDERR"
               done
 
               if [[ "$PUSH_EXIT" -ne 0 ]]; then
-                echo "::error::Failed to push ${INGOT_FILE}: ${PUSH_OUTPUT}"
+                echo "::error::Failed to push ${INGOT_FILE}"
                 PUSH_FAILED=true
                 break
               fi
 
-              DIGEST=$(echo "$PUSH_OUTPUT" | jq -r '.digest')
+              DIGEST=$(jq -r '.digest // empty' <<< "$PUSH_OUTPUT")
+              if [[ -z "$DIGEST" ]]; then
+                echo "::error::No digest in push output for ${INGOT_FILE}"
+                PUSH_FAILED=true
+                break
+              fi
               echo "  Pushed: digest=${DIGEST}"
 
               # Build asset entry for package-manifest (including digest)
@@ -400,19 +420,12 @@ jobs:
 
             INDEX_SOURCES=()
             for meta_file in "${META_LIST[@]}"; do
-              PLATFORM=$(jq -r '.platform' "$meta_file")
-              ARCH=$(jq -r '.arch' "$meta_file")
-              PLATFORM_TAG="${OCI_TAG}-${PLATFORM}-${ARCH}"
-              INDEX_SOURCES+=("${REPO_REF}:${PLATFORM_TAG}")
+              read -r p a < <(jq -r '[.platform, .arch] | @tsv' "$meta_file")
+              INDEX_SOURCES+=("${REPO_REF}:${OCI_TAG}-${p}-${a}")
             done
 
-            set +e
-            oras manifest index create "${REPO_REF}:${OCI_TAG}" \
-              "${INDEX_SOURCES[@]}" 2>&1
-            INDEX_EXIT=$?
-            set -e
-
-            if [[ "$INDEX_EXIT" -ne 0 ]]; then
+            if ! oras manifest index create "${REPO_REF}:${OCI_TAG}" \
+              "${INDEX_SOURCES[@]}" 2>&1; then
               echo "::warning::Failed to create OCI Index for ${key}; per-platform tags are still available"
             else
               echo "  OCI Index created"
