@@ -208,6 +208,23 @@ if [[ -z "$FAMILY" || -z "$VERSION" ]]; then
     exit 3
 fi
 
+# Validate FAMILY, VERSION, PLATFORM, ARCH contain only safe characters
+# to prevent path traversal in output filenames and OCI tags.
+for _field_name in FAMILY VERSION; do
+    _field_val="${!_field_name}"
+    if ! [[ "$_field_val" =~ ^[a-zA-Z0-9._-]+$ ]]; then
+        fail "Invalid ${_field_name} value (unsafe characters): ${_field_val}"
+        exit 3
+    fi
+done
+for _field_name in PLATFORM ARCH; do
+    _field_val="${!_field_name}"
+    if ! [[ "$_field_val" =~ ^[a-z0-9_]+$ ]]; then
+        fail "Invalid ${_field_name} value (unsafe characters): ${_field_val}"
+        exit 3
+    fi
+done
+
 pass "Parsed: ${FAMILY} ${VERSION} (source.type = ${SOURCE_TYPE})"
 echo ""
 
@@ -565,8 +582,15 @@ elif [[ "$SOURCE_TYPE" == "build" ]]; then
         exit 3
     fi
 
-    readarray -t CONFIGURE_ARGS < <(jq -r '.source.build.configure_args // [] | .[]' "$MOLD_JSON")
-    readarray -t MAKE_ARGS < <(jq -r '.source.build.make_args // [] | .[]' "$MOLD_JSON")
+    CONFIGURE_ARGS=()
+    while IFS= read -r _arg; do
+        [[ -n "$_arg" ]] && CONFIGURE_ARGS+=("$_arg")
+    done < <(jq -r '.source.build.configure_args // [] | .[]' "$MOLD_JSON")
+
+    MAKE_ARGS=()
+    while IFS= read -r _arg; do
+        [[ -n "$_arg" ]] && MAKE_ARGS+=("$_arg")
+    done < <(jq -r '.source.build.make_args // [] | .[]' "$MOLD_JSON")
 
     # Default make parallelism if not specified in mold.toml
     if [[ ${#MAKE_ARGS[@]} -eq 0 ]]; then
@@ -584,6 +608,9 @@ elif [[ "$SOURCE_TYPE" == "build" ]]; then
 
     # Build directories use fixed paths under BASE_WORK_DIR so that
     # absolute paths in generated Makefiles remain valid across stages.
+    # NOTE: This means concurrent builds sharing the same WORK_DIR will
+    # collide. CI runners provide isolation; for local use, set WORK_DIR
+    # to a unique directory per build.
     SOURCE_DIR="${BASE_WORK_DIR}/source"
     BUILD_DIR="${BASE_WORK_DIR}/build"
     DESTDIR_ROOT="${BASE_WORK_DIR}/destdir"
@@ -725,7 +752,10 @@ elif [[ "$SOURCE_TYPE" == "build" ]]; then
         # --- Step 6: Install prerequisites ---
         echo -e "${BOLD}6. Install prerequisites${RESET}"
 
-        readarray -t APT_PACKAGES < <(jq -r '.source.build.prerequisites.apt // [] | .[]' "$MOLD_JSON")
+        APT_PACKAGES=()
+        while IFS= read -r _pkg; do
+            [[ -n "$_pkg" ]] && APT_PACKAGES+=("$_pkg")
+        done < <(jq -r '.source.build.prerequisites.apt // [] | .[]' "$MOLD_JSON")
 
         if [[ ${#APT_PACKAGES[@]} -gt 0 ]]; then
             if [[ "$PLATFORM" == "linux" ]]; then
@@ -809,7 +839,12 @@ elif [[ "$SOURCE_TYPE" == "build" ]]; then
             info "configure_args: ${CONFIGURE_ARGS[*]}"
         fi
 
-        # Support autoconf (./configure) and CMake (CMakeLists.txt)
+        # Support autoconf (./configure) and CMake (CMakeLists.txt).
+        # NOTE: --prefix is set first so configure_args cannot accidentally
+        # override it. If a mold's configure_args contains --prefix, the
+        # later value takes precedence in autoconf, which would cause the
+        # STAGING_DIR check in Step 9 to fail. Mold reviewers must ensure
+        # configure_args does not include --prefix.
         if [[ -x "${SOURCE_DIR}/configure" ]]; then
             set +e
             (
@@ -917,6 +952,8 @@ elif [[ "$SOURCE_TYPE" == "build" ]]; then
         # --- Step 9: Make install ---
         echo -e "${BOLD}9. Make install${RESET}"
 
+        # Clean previous install state to prevent stale files
+        rm -rf "$DESTDIR_ROOT"
         mkdir -p "$DESTDIR_ROOT"
 
         set +e
@@ -948,6 +985,7 @@ elif [[ "$SOURCE_TYPE" == "build" ]]; then
         echo -e "${BOLD}Preparing license files for packaging${RESET}"
 
         LICENSE_COUNT=$(jq '.metadata.license_files // [] | length' "$MOLD_JSON")
+        if [[ "$LICENSE_COUNT" -gt 0 ]]; then
         for idx in $(seq 0 $((LICENSE_COUNT - 1))); do
             LIC_FILE=$(jq -r ".metadata.license_files[$idx]" "$MOLD_JSON")
             if [[ -f "${SOURCE_DIR}/${LIC_FILE}" ]]; then
@@ -959,6 +997,7 @@ elif [[ "$SOURCE_TYPE" == "build" ]]; then
                 warn "License file not found in source or install tree: ${LIC_FILE}"
             fi
         done
+        fi
         echo ""
 
         # Create stage artifact if in make-only mode
