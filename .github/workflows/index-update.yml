@@ -39,15 +39,14 @@ jobs:
           python-version: '3.12'
 
       # Download artifacts from the triggering ingot-cast run.
-      # Downloads all artifacts (release-manifest JSON + ingot artifacts).
-      # Ingot artifacts include tar.xz binaries alongside metadata JSON;
-      # only the JSON files are used by generate-index.sh, but selective
+      # Downloads all artifacts (package-manifest JSON + ingot metadata).
+      # Only the JSON files are used by generate-index.sh, but selective
       # download within an artifact is not supported by download-artifact.
       # continue-on-error handles expected scenarios where no artifacts exist:
-      #   - ingot-cast skipped builds (DD-07: metadata-only changes)
-      #   - ingot-cast failed before upload-release
+      #   - ingot-cast skipped builds (metadata-only changes)
+      #   - ingot-cast failed before upload-package
       #   - Artifacts expired (retention-days: 3)
-      # In all cases, generate-index.sh falls back to GitHub Releases API (DD-09).
+      # In all cases, generate-index.sh falls back to OCI Registry API.
       - name: Download artifacts
         if: github.event_name == 'workflow_run'
         id: download-artifacts
@@ -71,7 +70,7 @@ jobs:
             echo "Artifact files:"
             find artifacts/ -type f -name '*.json' | sort
           else
-            echo "No artifacts available; generate-index.sh will use GitHub Releases API fallback"
+            echo "No artifacts available; generate-index.sh will use API fallback"
           fi
 
       - name: Generate index
