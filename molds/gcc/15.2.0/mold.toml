@@ -1,0 +1,39 @@
+[metadata]
+schema_version = 1
+family = "gcc"
+version = "15.2.0"
+status = "active"
+license = "GPL-3.0-or-later WITH GCC-exception-3.1"
+license_files = ["COPYING", "COPYING.RUNTIME"]
+homepage = "https://gcc.gnu.org"
+description = "GNU Compiler Collection (GCC)"
+
+[metadata.components]
+compiler = "gcc"
+
+[source]
+type = "build"
+
+[source.build]
+source_url = "https://ftp.gnu.org/gnu/gcc/gcc-15.2.0/gcc-15.2.0.tar.xz"
+source_sha256 = "438fd996826b0c82485a29da03a72d71d6e3541a83ec702df4271f6fe025d24e"
+configure_args = [
+    "--enable-languages=c,c++",
+    "--disable-multilib",
+    "--disable-bootstrap",
+]
+make_args = ["-j$(nproc)"]
+
+[source.build.prerequisites]
+apt = ["libgmp-dev", "libmpfr-dev", "libmpc-dev", "libisl-dev"]
+
+[test]
+hello_world_source = """
+#include <stdio.h>
+int main() {
+    printf("Hello, scrap!\\n");
+    return 0;
+}
+"""
+compile_command = "{compiler} -o hello hello.c"
+expected_output = "Hello, scrap!\n"
