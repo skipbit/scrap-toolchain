@@ -51,6 +51,7 @@ add_summary() { SUMMARY_MD+="$1"$'\n'; }
 
 # Cleanup on exit
 TMPDIR_INDEX=""
+# shellcheck disable=SC2329
 cleanup() {
     if [[ -n "$TMPDIR_INDEX" && -d "$TMPDIR_INDEX" ]]; then
         rm -rf "$TMPDIR_INDEX"
