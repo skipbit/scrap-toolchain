@@ -54,8 +54,15 @@ jobs:
 
           CHANGED_FILES=$(git diff --name-only "${BASE_SHA}" "${HEAD_SHA}")
 
-          # Check if infrastructure files changed (triggers full validation of all molds)
-          INFRA_CHANGED=$(echo "$CHANGED_FILES" | grep -E '^(schema/|scripts/|platforms\.toml$|\.github/workflows/)' || true)
+          # Check if infrastructure files changed (triggers full validation of all molds).
+          # Only files that directly affect mold validation are included:
+          #   - schema/     : mold schema changes can invalidate existing molds
+          #   - scripts/    : validation/build logic changes affect all molds
+          #   - platforms.toml : platform matrix changes affect validation scope
+          # Workflow files (.github/workflows/) are excluded because they only
+          # affect how validation runs, not what is valid. If a workflow change
+          # requires full re-validation, use workflow_dispatch manually.
+          INFRA_CHANGED=$(echo "$CHANGED_FILES" | grep -E '^(schema/|scripts/|platforms\.toml$)' || true)
 
           # Extract unique mold directories
           MOLD_DIRS=$(echo "$CHANGED_FILES" \
