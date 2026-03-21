@@ -12,7 +12,12 @@ on:
         type: string
 
 permissions:
-  contents: write
+  contents: read
+  packages: write
+
+concurrency:
+  group: ingot-cast
+  cancel-in-progress: false
 
 jobs:
   detect-build-targets:
@@ -48,7 +53,7 @@ jobs:
           # === Step 1: Identify changed molds ===
 
           if [[ "$EVENT_NAME" == "workflow_dispatch" ]]; then
-            # workflow_dispatch: use mold_path directly (bypass DD-07)
+            # workflow_dispatch: use mold_path directly
             MOLD_PATH="${MOLD_PATH_INPUT%/}"
             if ! [[ "$MOLD_PATH" =~ ^molds/[a-zA-Z0-9._-]+/[a-zA-Z0-9._-]+$ ]]; then
               echo "::error::Invalid mold path format: ${MOLD_PATH}"
@@ -60,7 +65,7 @@ jobs:
             fi
             CHANGED_MOLDS=("$MOLD_PATH")
           else
-            # Push event: detect changes via git diff (DD-07)
+            # Push event: detect changes via git diff
             # Guard against null SHA on initial push
             NULL_SHA="0000000000000000000000000000000000000000"
             if [[ "$BEFORE_SHA" == "$NULL_SHA" ]]; then
@@ -109,7 +114,7 @@ jobs:
               print('false')
           CHECKEOF
 
-            # DD-07: Filter to molds with source/patches changes only
+            # Filter to molds with source/patches changes only
             CHANGED_MOLDS=()
             while IFS= read -r mold_dir; do
               [[ -z "$mold_dir" ]] && continue
@@ -137,7 +142,7 @@ jobs:
               if [[ "$NEEDS_BUILD" == "true" ]]; then
                 CHANGED_MOLDS+=("$mold_dir")
               else
-                echo "Skipping ${mold_dir}: no source/patches changes (DD-07)"
+                echo "Skipping ${mold_dir}: no source/patches changes"
               fi
             done <<< "$MOLD_DIRS"
           fi
@@ -149,8 +154,8 @@ jobs:
           fi
 
           # === Step 2: Classify by source type ===
-          # ADR-0035: fetch-type molds no longer produce artifacts in CI.
-          # Only build-type molds trigger ingot production (TSK-0003).
+          # Fetch-type molds are validated in pr-validation.yml only.
+          # Only build-type molds trigger ingot production here.
 
           HAS_BUILD=false
 
@@ -166,41 +171,53 @@ jobs:
             echo "Detected: ${mold} (${SOURCE_TYPE})"
 
             if [[ "$SOURCE_TYPE" == "fetch" ]]; then
-              echo "::notice::Fetch type: ${mold} — validated in pr-validation.yml only (ADR-0035)"
+              echo "::notice::Fetch type: ${mold} — validated in pr-validation.yml only"
             elif [[ "$SOURCE_TYPE" == "build" ]]; then
               HAS_BUILD=true
-              echo "::notice::Build type detected: ${mold} (deferred to TSK-0003)"
+              echo "::notice::Build type detected: ${mold}"
             fi
           done
 
           echo "has_build_targets=${HAS_BUILD}" >> "$GITHUB_OUTPUT"
 
-  # upload-package: Consolidate artifacts and publish to ghcr.io (OCI).
+  # upload-package: Consolidate build artifacts and publish to ghcr.io (OCI).
   #
-  # Design intent (DSN-0004 DD-10):
-  #   Partial release prevention is handled by per-mold completeness checks
-  #   within this job's steps.
+  # Design:
+  #   - Push each platform's ingot as a separate OCI artifact with a
+  #     platform-specific tag (e.g., gcc:14.2.0-linux-x86_64)
+  #   - Create an OCI Index manifest combining all platforms under the
+  #     version tag (e.g., gcc:14.2.0)
+  #   - Output package-manifest JSON for downstream index generation
+  #   - Partial release prevention: skip molds missing any Tier 1 platform
   #
-  # ADR-0035: fetch-type ingot production removed. cast-fetch job deleted.
-  # TSK-0003: build-type pipeline (cast-build-*) will be added here.
-  # Until TSK-0003 is implemented, this job is disabled.
+  # This job runs only when build-type molds produce artifacts.
+  # The build stages (cast-build-configure/make/package) that produce
+  # these artifacts are added separately.
   upload-package:
     needs: [detect-build-targets]
-    # Disabled until build-type pipeline is implemented (TSK-0003).
-    if: false
+    if: needs.detect-build-targets.outputs.has_build_targets == 'true'
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
+
+      - name: Set up oras
+        uses: oras-project/setup-oras@v1
+        with:
+          version: '1.2.2'
+
+      - name: Log in to ghcr.io
+        run: echo "${{ github.token }}" | oras login ghcr.io -u "${{ github.actor }}" --password-stdin
 
       - name: Download all artifacts
         uses: actions/download-artifact@v4
         with:
           path: artifacts/
           pattern: ingot-*
+          merge-multiple: true
 
-      - name: Process releases
+      - name: Push to ghcr.io and generate package manifests
         env:
-          GH_TOKEN: ${{ github.token }}
+          REGISTRY: ghcr.io/${{ github.repository }}
         run: |
           set -euo pipefail
 
@@ -215,7 +232,7 @@ jobs:
             exit 1
           fi
 
-          # Group metadata by family-version using associative arrays
+          # Group metadata by family-version
           declare -A MOLD_META_FILES
 
           for meta_file in "${METADATA_FILES[@]}"; do
@@ -233,7 +250,8 @@ jobs:
           print(len(data['platforms']['tier1']))
           ")
 
-          RELEASE_COUNT=0
+          PUSH_COUNT=0
+          SKIP_COUNT=0
           FAILURE_COUNT=0
 
           for key in "${!MOLD_META_FILES[@]}"; do
@@ -243,25 +261,185 @@ jobs:
             echo ""
             echo "=== Processing: ${key} (${PLATFORM_COUNT}/${TIER1_COUNT} platforms) ==="
 
-            # Per-mold completeness check (DD-10)
+            # Per-mold completeness check: skip if not all Tier 1 platforms present
             if [[ "$PLATFORM_COUNT" -lt "$TIER1_COUNT" ]]; then
-              echo "::warning::Skipping ${key}: only ${PLATFORM_COUNT}/${TIER1_COUNT} platforms (DD-10)"
+              echo "::warning::Skipping ${key}: only ${PLATFORM_COUNT}/${TIER1_COUNT} platforms available"
+              SKIP_COUNT=$((SKIP_COUNT + 1))
               continue
             fi
 
-            # Extract family and version from first metadata file
             FIRST_META="${META_LIST[0]}"
             FAMILY=$(jq -r '.family' "$FIRST_META")
             VERSION=$(jq -r '.version' "$FIRST_META")
 
-            # TODO (TSK-0003/TSK-0009): Implement oras push to ghcr.io
-            # Replace gh release create with oras push (ADR-0037).
-            echo "::notice::Build-type publishing via oras push is not yet implemented"
-            RELEASE_COUNT=$((RELEASE_COUNT + 1))
+            # --- Determine OCI revision tag ---
+            REPO_REF="${REGISTRY}/${FAMILY}"
+
+            # List existing tags. A 404 (repository not yet created) is treated
+            # as an empty list — this is the expected state for first-time push.
+            set +e
+            EXISTING_TAGS=$(oras repo tags "$REPO_REF" 2>/dev/null)
+            TAGS_EXIT=$?
+            set -e
+
+            if [[ "$TAGS_EXIT" -ne 0 ]]; then
+              EXISTING_TAGS=""
+            fi
+
+            # Find the latest revision for this version.
+            # Revision scheme: initial build uses bare version (e.g., 14.2.0),
+            # which is implicitly revision 1. First rebuild is -r2, then -r3, etc.
+            OCI_TAG="${VERSION}"
+            if echo "$EXISTING_TAGS" | grep -qE "^${VERSION}(-r[0-9]+)?$"; then
+              LATEST_REV=$(echo "$EXISTING_TAGS" \
+                | grep -oE "^${VERSION}(-r[0-9]+)?$" \
+                | sed "s/^${VERSION}//" \
+                | sed 's/^$/0/' \
+                | sed 's/^-r//' \
+                | sort -n \
+                | tail -1)
+
+              if [[ "$LATEST_REV" -eq 0 ]]; then
+                # Base tag exists without revision suffix -> implicit r1 -> next is r2
+                OCI_TAG="${VERSION}-r2"
+              else
+                NEXT_REV=$((LATEST_REV + 1))
+                OCI_TAG="${VERSION}-r${NEXT_REV}"
+              fi
+            fi
+
+            echo "OCI tag: ${FAMILY}:${OCI_TAG}"
+
+            # --- Push each platform's ingot ---
+            PUSH_FAILED=false
+            ASSETS_JSON="[]"
+
+            for meta_file in "${META_LIST[@]}"; do
+              PLATFORM=$(jq -r '.platform' "$meta_file")
+              ARCH=$(jq -r '.arch' "$meta_file")
+              INGOT_FILE=$(jq -r '.ingot_file' "$meta_file")
+              GLIBC_VERSION=$(jq -r '.glibc_version // empty' "$meta_file")
+
+              PLATFORM_TAG="${OCI_TAG}-${PLATFORM}-${ARCH}"
+
+              # Find the ingot file in artifacts
+              INGOT_PATH=$(find artifacts/ -name "$INGOT_FILE" -type f | head -1)
+              if [[ -z "$INGOT_PATH" ]]; then
+                echo "::error::Ingot file not found: ${INGOT_FILE}"
+                PUSH_FAILED=true
+                break
+              fi
+
+              echo "  Pushing: ${INGOT_FILE} -> ${REPO_REF}:${PLATFORM_TAG}"
+
+              # Build annotation arguments
+              ANNOTATIONS=(
+                --annotation "org.opencontainers.image.title=${INGOT_FILE}"
+                --annotation "org.skipbit.scrap.family=${FAMILY}"
+                --annotation "org.skipbit.scrap.version=${VERSION}"
+                --annotation "org.skipbit.scrap.platform=${PLATFORM}"
+                --annotation "org.skipbit.scrap.arch=${ARCH}"
+                --annotation "org.skipbit.scrap.source_type=build"
+              )
+              if [[ -n "$GLIBC_VERSION" ]]; then
+                ANNOTATIONS+=(--annotation "org.skipbit.scrap.glibc_version=${GLIBC_VERSION}")
+              fi
+
+              # Push with retry (max 2 attempts)
+              PUSH_OUTPUT=""
+              PUSH_EXIT=1
+              for attempt in 1 2; do
+                set +e
+                PUSH_OUTPUT=$(oras push "${REPO_REF}:${PLATFORM_TAG}" \
+                  --artifact-type "application/vnd.skipbit.scrap.ingot.v1+tar.xz" \
+                  "${ANNOTATIONS[@]}" \
+                  "${INGOT_PATH}:application/x-tar+xz" \
+                  --format json 2>&1)
+                PUSH_EXIT=$?
+                set -e
+
+                if [[ "$PUSH_EXIT" -eq 0 ]]; then
+                  break
+                fi
+                if [[ "$attempt" -lt 2 ]]; then
+                  echo "  Push failed (attempt ${attempt}), retrying..."
+                  sleep 3
+                fi
+              done
+
+              if [[ "$PUSH_EXIT" -ne 0 ]]; then
+                echo "::error::Failed to push ${INGOT_FILE}: ${PUSH_OUTPUT}"
+                PUSH_FAILED=true
+                break
+              fi
+
+              DIGEST=$(echo "$PUSH_OUTPUT" | jq -r '.digest')
+              echo "  Pushed: digest=${DIGEST}"
+
+              # Build asset entry for package-manifest (including digest)
+              ASSET_ENTRY=$(jq -n \
+                --arg ingot_file "$INGOT_FILE" \
+                --arg platform "$PLATFORM" \
+                --arg arch "$ARCH" \
+                --arg digest "$DIGEST" \
+                '{ingot_file: $ingot_file, platform: $platform, arch: $arch, digest: $digest}')
+              ASSETS_JSON=$(echo "$ASSETS_JSON" | jq --argjson entry "$ASSET_ENTRY" '. + [$entry]')
+            done
+
+            if [[ "$PUSH_FAILED" == "true" ]]; then
+              echo "::error::Aborting ${key} due to push failure"
+              FAILURE_COUNT=$((FAILURE_COUNT + 1))
+              continue
+            fi
+
+            # --- Create OCI Index for multi-architecture ---
+            # The index allows OCI-native tools to resolve platform-specific
+            # manifests from a single version tag. This is best-effort; the
+            # per-platform tags remain usable even if index creation fails.
+            echo "  Creating OCI Index: ${REPO_REF}:${OCI_TAG}"
+
+            INDEX_SOURCES=()
+            for meta_file in "${META_LIST[@]}"; do
+              PLATFORM=$(jq -r '.platform' "$meta_file")
+              ARCH=$(jq -r '.arch' "$meta_file")
+              PLATFORM_TAG="${OCI_TAG}-${PLATFORM}-${ARCH}"
+              INDEX_SOURCES+=("${REPO_REF}:${PLATFORM_TAG}")
+            done
+
+            set +e
+            oras manifest index create "${REPO_REF}:${OCI_TAG}" \
+              "${INDEX_SOURCES[@]}" 2>&1
+            INDEX_EXIT=$?
+            set -e
+
+            if [[ "$INDEX_EXIT" -ne 0 ]]; then
+              echo "::warning::Failed to create OCI Index for ${key}; per-platform tags are still available"
+            else
+              echo "  OCI Index created"
+            fi
+
+            # --- Generate package-manifest JSON ---
+            CREATED_AT=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
+            jq -n \
+              --arg family "$FAMILY" \
+              --arg version "$VERSION" \
+              --arg oci_tag "${FAMILY}:${OCI_TAG}" \
+              --argjson assets "$ASSETS_JSON" \
+              --arg created_at "$CREATED_AT" \
+              '{
+                family: $family,
+                version: $version,
+                oci_tag: $oci_tag,
+                assets: $assets,
+                created_at: $created_at
+              }' > "${MANIFEST_DIR}/package-manifest-${FAMILY}-${VERSION}.json"
+
+            echo "  Package manifest written"
+            PUSH_COUNT=$((PUSH_COUNT + 1))
           done
 
           echo ""
-          echo "=== Summary: ${RELEASE_COUNT} release(s) processed, ${FAILURE_COUNT} failure(s) ==="
+          echo "=== Summary: ${PUSH_COUNT} pushed, ${SKIP_COUNT} skipped, ${FAILURE_COUNT} failed ==="
 
           if [[ "$FAILURE_COUNT" -gt 0 ]]; then
             exit 1
