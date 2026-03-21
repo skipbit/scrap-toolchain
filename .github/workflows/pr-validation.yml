@@ -61,7 +61,8 @@ jobs:
           #   - platforms.toml : platform matrix changes affect validation scope
           # Workflow files (.github/workflows/) are excluded because they only
           # affect how validation runs, not what is valid. If a workflow change
-          # requires full re-validation, use workflow_dispatch manually.
+          # requires full re-validation, include a trivial change to a relevant
+          # infrastructure file (e.g., scripts/) in the same PR.
           INFRA_CHANGED=$(echo "$CHANGED_FILES" | grep -E '^(schema/|scripts/|platforms\.toml$)' || true)
 
           # Extract unique mold directories
