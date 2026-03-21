@@ -9,7 +9,7 @@ homepage = "https://gcc.gnu.org"
 description = "GNU Compiler Collection (GCC)"
 
 [metadata.components]
-compiler = "gcc"
+compiler = "g++"
 stdlib = "libstdc++"
 
 [source]
@@ -36,5 +36,5 @@ int main() {
     return 0;
 }
 """
-compile_command = "{compiler}++ -o hello hello.cpp"
+compile_command = "{compiler} -std=c++23 -o hello hello.cpp"
 expected_output = "Hello, scrap!\n"
