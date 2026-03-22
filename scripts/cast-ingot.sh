@@ -825,43 +825,50 @@ elif [[ "$SOURCE_TYPE" == "build" ]]; then
                 pass "Build dependencies verified on macOS"
 
                 # Detect Homebrew prefix and inject --with-xxx flags for
-                # configure. GNU build systems (autoconf) need explicit
-                # paths to find libraries installed via Homebrew because
+                # autoconf projects. GNU build systems need explicit paths
+                # to find libraries installed via Homebrew because
                 # /opt/homebrew is not in the default search path.
+                # NOTE: Only applies to autoconf (./configure). CMake
+                # projects require different variable names (e.g. -DGMP_ROOT).
                 HB_PREFIX=""
-                if [[ -d /opt/homebrew ]]; then
+                if command -v brew &>/dev/null; then
+                    HB_PREFIX="$(brew --prefix)"
+                elif [[ -d /opt/homebrew ]]; then
                     HB_PREFIX="/opt/homebrew"
                 elif [[ -d /usr/local/Cellar ]]; then
                     HB_PREFIX="/usr/local"
                 fi
 
-                if [[ -n "$HB_PREFIX" ]]; then
-                    # Map apt package names to autoconf --with-xxx flag names
-                    declare -A _HB_FLAG_MAP=(
-                        [libgmp-dev]="gmp"
-                        [libmpfr-dev]="mpfr"
-                        [libmpc-dev]="mpc"
-                        [libisl-dev]="isl"
-                    )
+                if [[ -n "$HB_PREFIX" ]] && [[ -x "${SOURCE_DIR}/configure" ]]; then
                     for pkg in "${APT_PACKAGES[@]}"; do
-                        _flag_name="${_HB_FLAG_MAP[$pkg]:-}"
+                        _flag_name=""
+                        case "$pkg" in
+                            libgmp-dev)  _flag_name="gmp" ;;
+                            libmpfr-dev) _flag_name="mpfr" ;;
+                            libmpc-dev)  _flag_name="mpc" ;;
+                            libisl-dev)  _flag_name="isl" ;;
+                        esac
+
                         if [[ -z "$_flag_name" ]]; then
                             continue
                         fi
-                        # Skip if mold already specifies --with-xxx
-                        _already_set=false
+
+                        # Skip if mold already specifies --with-xxx or --without-xxx
+                        _skip=0
                         for _arg in "${CONFIGURE_ARGS[@]}"; do
-                            if [[ "$_arg" == --with-${_flag_name}=* ]]; then
-                                _already_set=true
-                                break
-                            fi
+                            case "$_arg" in
+                                --with-${_flag_name}=*|--with-${_flag_name}|--without-${_flag_name})
+                                    _skip=1
+                                    break
+                                    ;;
+                            esac
                         done
-                        if [[ "$_already_set" == "false" ]]; then
+
+                        if [[ $_skip -eq 0 ]]; then
                             CONFIGURE_ARGS+=("--with-${_flag_name}=${HB_PREFIX}")
                             info "macOS: injected --with-${_flag_name}=${HB_PREFIX}"
                         fi
                     done
-                    unset _HB_FLAG_MAP
                 fi
             fi
         else
