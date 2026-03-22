@@ -27,6 +27,8 @@ configure_args = [
     "--enable-languages=c,c++",
     "--disable-multilib",
     "--disable-bootstrap",
+    "--enable-checking=release",
+    "--disable-nls",
 ]
 make_args = ["-j$(nproc)"]
 
