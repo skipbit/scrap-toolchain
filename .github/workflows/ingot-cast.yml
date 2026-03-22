@@ -376,6 +376,15 @@ jobs:
           path: ${{ runner.temp }}/stage-artifacts/configure-tree.tar.gz
           retention-days: 3
 
+      - name: Upload build logs on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        continue-on-error: true
+        with:
+          name: logs-configure-${{ matrix.family }}-${{ matrix.version }}-${{ matrix.platform }}-${{ matrix.arch }}
+          path: ${{ runner.temp }}/stage-artifacts/*.log
+          retention-days: 3
+
   cast-build-make:
     needs: [detect-build-targets, cast-build-configure]
     if: needs.detect-build-targets.outputs.has_build_targets == 'true'
@@ -451,6 +460,15 @@ jobs:
         with:
           name: stage-make-${{ matrix.family }}-${{ matrix.version }}-${{ matrix.platform }}-${{ matrix.arch }}
           path: ${{ runner.temp }}/stage-artifacts/installed-tree.tar.gz
+          retention-days: 3
+
+      - name: Upload build logs on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        continue-on-error: true
+        with:
+          name: logs-make-${{ matrix.family }}-${{ matrix.version }}-${{ matrix.platform }}-${{ matrix.arch }}
+          path: ${{ runner.temp }}/stage-artifacts/*.log
           retention-days: 3
 
   cast-build-package:
