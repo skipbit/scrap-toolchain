@@ -832,10 +832,11 @@ elif [[ "$SOURCE_TYPE" == "build" ]]; then
                 # projects require different variable names (e.g. -DGMP_ROOT).
                 HB_PREFIX=""
                 if command -v brew &>/dev/null; then
-                    HB_PREFIX="$(brew --prefix)"
-                elif [[ -d /opt/homebrew ]]; then
+                    HB_PREFIX="$(brew --prefix 2>/dev/null || true)"
+                fi
+                if [[ -z "$HB_PREFIX" ]] && [[ -d /opt/homebrew ]]; then
                     HB_PREFIX="/opt/homebrew"
-                elif [[ -d /usr/local/Cellar ]]; then
+                elif [[ -z "$HB_PREFIX" ]] && [[ -d /usr/local/Cellar ]]; then
                     HB_PREFIX="/usr/local"
                 fi
 
@@ -857,7 +858,7 @@ elif [[ "$SOURCE_TYPE" == "build" ]]; then
                         _skip=0
                         for _arg in "${CONFIGURE_ARGS[@]}"; do
                             case "$_arg" in
-                                --with-${_flag_name}=*|--with-${_flag_name}|--without-${_flag_name})
+                                --with-${_flag_name}=*|--with-${_flag_name}|--without-${_flag_name}|--without-${_flag_name}=*)
                                     _skip=1
                                     break
                                     ;;
