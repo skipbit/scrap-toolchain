@@ -3,7 +3,11 @@ name: Ingot Cast
 on:
   push:
     branches: [main]
-    paths: ['molds/**']
+    paths:
+      - 'molds/**'
+      - 'scripts/**'
+      - 'schema/**'
+      - 'platforms.toml'
   workflow_dispatch:
     inputs:
       mold_path:
@@ -71,26 +75,65 @@ jobs:
             # Guard against null SHA on initial push
             NULL_SHA="0000000000000000000000000000000000000000"
             if [[ "$BEFORE_SHA" == "$NULL_SHA" ]]; then
-              CHANGED_FILES=$(git ls-tree -r --name-only HEAD -- molds/)
+              ALL_CHANGED_FILES=$(git ls-tree -r --name-only HEAD)
             else
-              CHANGED_FILES=$(git diff --name-only "${BEFORE_SHA}..${CURRENT_SHA}" -- molds/ || true)
+              ALL_CHANGED_FILES=$(git diff --name-only "${BEFORE_SHA}..${CURRENT_SHA}" || true)
             fi
 
-            if [[ -z "$CHANGED_FILES" ]]; then
-              echo "No mold changes detected"
+            if [[ -z "$ALL_CHANGED_FILES" ]]; then
+              echo "No changes detected"
               no_targets
               exit 0
             fi
 
-            # Extract unique mold directories (molds/{family}/{version})
-            MOLD_DIRS=$(echo "$CHANGED_FILES" \
-              | sed 's|^\(molds/[^/]*/[^/]*\)/.*|\1|; s|^\(molds/[^/]*/[^/]*\)$|\1|' \
-              | sort -u)
+            # Check for infrastructure changes that affect all molds.
+            # When build scripts, schema, or platform definitions change,
+            # all existing build-type molds must be rebuilt to ensure
+            # published ingots reflect the latest infrastructure.
+            # Workflow files (.github/workflows/) are excluded — they
+            # affect how builds run, not what is built. Same rationale
+            # as pr-validation.yml.
+            INFRA_CHANGED=$(echo "$ALL_CHANGED_FILES" | grep -E '^(schema/|scripts/|platforms\.toml$)' || true)
 
-            # Write source-change-detection script to a temp file
-            CHECK_SCRIPT=$(mktemp)
-            trap 'rm -f "$CHECK_SCRIPT"' EXIT
-            cat > "$CHECK_SCRIPT" << 'CHECKEOF'
+            # Extract mold-specific changes
+            MOLD_CHANGED_FILES=$(echo "$ALL_CHANGED_FILES" | grep '^molds/' || true)
+
+            if [[ -z "$INFRA_CHANGED" ]] && [[ -z "$MOLD_CHANGED_FILES" ]]; then
+              echo "No relevant changes detected (no mold or infrastructure changes)"
+              no_targets
+              exit 0
+            fi
+
+            CHANGED_MOLDS=()
+
+            # --- Infrastructure change: include ALL existing molds ---
+            # (fetch vs build filtering happens in Step 2 below)
+            if [[ -n "$INFRA_CHANGED" ]]; then
+              echo "Infrastructure change detected:"
+              echo "$INFRA_CHANGED" | while IFS= read -r f; do echo "  - $f"; done
+              echo "All existing molds will be evaluated for rebuild."
+
+              ALL_MOLD_DIRS=$(find molds -name "mold.toml" -not -path "*/\.*" 2>/dev/null \
+                | sed 's|/mold\.toml$||' | sort -u || true)
+              while IFS= read -r mold_dir; do
+                [[ -z "$mold_dir" ]] && continue
+                CHANGED_MOLDS+=("$mold_dir")
+              done <<< "$ALL_MOLD_DIRS"
+            fi
+
+            # --- Mold-specific changes: add individually changed molds ---
+            if [[ -n "$MOLD_CHANGED_FILES" ]]; then
+              MOLD_DIRS=$(echo "$MOLD_CHANGED_FILES" \
+                | sed 's|^\(molds/[^/]*/[^/]*\)/.*|\1|; s|^\(molds/[^/]*/[^/]*\)$|\1|' \
+                | sort -u)
+
+              # Source-change detection: skip metadata-only changes.
+              # Only applies when INFRA_CHANGED is empty (infra changes
+              # rebuild all molds regardless of their individual changes).
+              if [[ -z "$INFRA_CHANGED" ]]; then
+                CHECK_SCRIPT=$(mktemp)
+                trap 'rm -f "$CHECK_SCRIPT"' EXIT
+                cat > "$CHECK_SCRIPT" << 'CHECKEOF'
           import tomllib, subprocess, sys, os
 
           mold_dir = os.environ['MOLD_DIR_VAR']
@@ -116,37 +159,45 @@ jobs:
               print('false')
           CHECKEOF
 
-            # Filter to molds with source/patches changes only
-            CHANGED_MOLDS=()
-            while IFS= read -r mold_dir; do
-              [[ -z "$mold_dir" ]] && continue
-              [[ ! -f "${mold_dir}/mold.toml" ]] && continue
+                while IFS= read -r mold_dir; do
+                  [[ -z "$mold_dir" ]] && continue
+                  [[ ! -f "${mold_dir}/mold.toml" ]] && continue
 
-              NEEDS_BUILD=false
+                  NEEDS_BUILD=false
 
-              # Check if patches/ changed
-              if echo "$CHANGED_FILES" | grep -q "^${mold_dir}/patches/"; then
-                NEEDS_BUILD=true
-              fi
-
-              # Check if mold.toml changed and source/test sections differ
-              if echo "$CHANGED_FILES" | grep -q "^${mold_dir}/mold.toml$"; then
-                if [[ "$BEFORE_SHA" == "$NULL_SHA" ]]; then
-                  NEEDS_BUILD=true
-                else
-                  SOURCE_CHANGED=$(MOLD_DIR_VAR="$mold_dir" BEFORE_SHA_VAR="$BEFORE_SHA" python3 "$CHECK_SCRIPT")
-                  if [[ "$SOURCE_CHANGED" == "true" ]]; then
+                  if echo "$MOLD_CHANGED_FILES" | grep -q "^${mold_dir}/patches/"; then
                     NEEDS_BUILD=true
                   fi
-                fi
-              fi
 
-              if [[ "$NEEDS_BUILD" == "true" ]]; then
-                CHANGED_MOLDS+=("$mold_dir")
+                  if echo "$MOLD_CHANGED_FILES" | grep -q "^${mold_dir}/mold.toml$"; then
+                    if [[ "$BEFORE_SHA" == "$NULL_SHA" ]]; then
+                      NEEDS_BUILD=true
+                    else
+                      SOURCE_CHANGED=$(MOLD_DIR_VAR="$mold_dir" BEFORE_SHA_VAR="$BEFORE_SHA" python3 "$CHECK_SCRIPT")
+                      if [[ "$SOURCE_CHANGED" == "true" ]]; then
+                        NEEDS_BUILD=true
+                      fi
+                    fi
+                  fi
+
+                  if [[ "$NEEDS_BUILD" == "true" ]]; then
+                    CHANGED_MOLDS+=("$mold_dir")
+                  else
+                    echo "Skipping ${mold_dir}: no source/patches changes"
+                  fi
+                done <<< "$MOLD_DIRS"
               else
-                echo "Skipping ${mold_dir}: no source/patches changes"
+                # INFRA_CHANGED is set — all molds already included above.
+                # Individual mold changes are redundant (union is handled
+                # by dedup below).
+                :
               fi
-            done <<< "$MOLD_DIRS"
+            fi
+
+            # Deduplicate (infra + individual mold changes may overlap)
+            if [[ ${#CHANGED_MOLDS[@]} -gt 0 ]]; then
+              mapfile -t CHANGED_MOLDS < <(printf '%s\n' "${CHANGED_MOLDS[@]}" | sort -u)
+            fi
           fi
 
           if [[ ${#CHANGED_MOLDS[@]} -eq 0 ]]; then
