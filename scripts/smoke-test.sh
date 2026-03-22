@@ -248,10 +248,8 @@ fi
 # binary can find libraries shipped with the toolchain (e.g., libstdc++.so
 # built by GCC). Without this, the binary may link against the container's
 # older libstdc++ and fail with GLIBCXX version errors.
-# NOTE: DYLD_LIBRARY_PATH is NOT set on macOS because it can conflict with
-# system frameworks and cause crashes (Abort trap: 6). macOS toolchains
-# are expected to use @rpath or install_name for library resolution.
-SMOKE_ENV=()
+# NOTE: Not set on macOS — DYLD_LIBRARY_PATH conflicts with system
+# frameworks and causes crashes. macOS toolchains use @rpath instead.
 if [[ "$(uname -s)" == "Linux" ]]; then
     INGOT_LIB="${INGOT_ROOT}/lib"
     INGOT_LIB64="${INGOT_ROOT}/lib64"
@@ -259,16 +257,16 @@ if [[ "$(uname -s)" == "Linux" ]]; then
     [[ -d "$INGOT_LIB" ]] && SMOKE_LD_PATH="${INGOT_LIB}"
     [[ -d "$INGOT_LIB64" ]] && SMOKE_LD_PATH="${SMOKE_LD_PATH:+${SMOKE_LD_PATH}:}${INGOT_LIB64}"
     if [[ -n "$SMOKE_LD_PATH" ]]; then
-        SMOKE_ENV=(env LD_LIBRARY_PATH="${SMOKE_LD_PATH}${LD_LIBRARY_PATH:+:${LD_LIBRARY_PATH}}")
+        export LD_LIBRARY_PATH="${SMOKE_LD_PATH}${LD_LIBRARY_PATH:+:${LD_LIBRARY_PATH}}"
     fi
 fi
 
 set +e
 if [[ -n "$TIMEOUT_CMD" ]]; then
-    "${SMOKE_ENV[@]}" $TIMEOUT_CMD "$TIMEOUT" "${WORK_DIR}/hello" > "${WORK_DIR}/actual" 2>&1
+    $TIMEOUT_CMD "$TIMEOUT" "${WORK_DIR}/hello" > "${WORK_DIR}/actual" 2>&1
     RUN_EXIT=$?
 else
-    "${SMOKE_ENV[@]}" "${WORK_DIR}/hello" > "${WORK_DIR}/actual" 2>&1
+    "${WORK_DIR}/hello" > "${WORK_DIR}/actual" 2>&1
     RUN_EXIT=$?
 fi
 set -e
