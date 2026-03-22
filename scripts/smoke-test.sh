@@ -244,26 +244,31 @@ else
     warn "Neither 'timeout' nor 'gtimeout' found; running without timeout protection"
 fi
 
-# Add ingot lib directories to library search path so the test binary
-# can find libraries shipped with the toolchain (e.g., libstdc++.so
-# built by GCC). Without this, the binary may link against the host/
-# container's older libstdc++ and fail with GLIBCXX version errors.
-INGOT_LIB="${INGOT_ROOT}/lib"
-INGOT_LIB64="${INGOT_ROOT}/lib64"
-SMOKE_LD_PATH=""
-[[ -d "$INGOT_LIB" ]] && SMOKE_LD_PATH="${INGOT_LIB}"
-[[ -d "$INGOT_LIB64" ]] && SMOKE_LD_PATH="${SMOKE_LD_PATH:+${SMOKE_LD_PATH}:}${INGOT_LIB64}"
+# On Linux, add ingot lib directories to LD_LIBRARY_PATH so the test
+# binary can find libraries shipped with the toolchain (e.g., libstdc++.so
+# built by GCC). Without this, the binary may link against the container's
+# older libstdc++ and fail with GLIBCXX version errors.
+# NOTE: DYLD_LIBRARY_PATH is NOT set on macOS because it can conflict with
+# system frameworks and cause crashes (Abort trap: 6). macOS toolchains
+# are expected to use @rpath or install_name for library resolution.
+SMOKE_ENV=()
+if [[ "$(uname -s)" == "Linux" ]]; then
+    INGOT_LIB="${INGOT_ROOT}/lib"
+    INGOT_LIB64="${INGOT_ROOT}/lib64"
+    SMOKE_LD_PATH=""
+    [[ -d "$INGOT_LIB" ]] && SMOKE_LD_PATH="${INGOT_LIB}"
+    [[ -d "$INGOT_LIB64" ]] && SMOKE_LD_PATH="${SMOKE_LD_PATH:+${SMOKE_LD_PATH}:}${INGOT_LIB64}"
+    if [[ -n "$SMOKE_LD_PATH" ]]; then
+        SMOKE_ENV=(env LD_LIBRARY_PATH="${SMOKE_LD_PATH}${LD_LIBRARY_PATH:+:${LD_LIBRARY_PATH}}")
+    fi
+fi
 
 set +e
 if [[ -n "$TIMEOUT_CMD" ]]; then
-    LD_LIBRARY_PATH="${SMOKE_LD_PATH}${LD_LIBRARY_PATH:+:${LD_LIBRARY_PATH}}" \
-    DYLD_LIBRARY_PATH="${SMOKE_LD_PATH}${DYLD_LIBRARY_PATH:+:${DYLD_LIBRARY_PATH}}" \
-      $TIMEOUT_CMD "$TIMEOUT" "${WORK_DIR}/hello" > "${WORK_DIR}/actual" 2>&1
+    "${SMOKE_ENV[@]}" $TIMEOUT_CMD "$TIMEOUT" "${WORK_DIR}/hello" > "${WORK_DIR}/actual" 2>&1
     RUN_EXIT=$?
 else
-    LD_LIBRARY_PATH="${SMOKE_LD_PATH}${LD_LIBRARY_PATH:+:${LD_LIBRARY_PATH}}" \
-    DYLD_LIBRARY_PATH="${SMOKE_LD_PATH}${DYLD_LIBRARY_PATH:+:${DYLD_LIBRARY_PATH}}" \
-      "${WORK_DIR}/hello" > "${WORK_DIR}/actual" 2>&1
+    "${SMOKE_ENV[@]}" "${WORK_DIR}/hello" > "${WORK_DIR}/actual" 2>&1
     RUN_EXIT=$?
 fi
 set -e
