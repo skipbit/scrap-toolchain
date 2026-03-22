@@ -1,6 +1,6 @@
 [index]
 schema_version = 1
-generated_at = "2026-03-22T05:42:12Z"
+generated_at = "2026-03-22T06:47:01Z"
 generator = "scripts/generate-index.sh"
 
 [[toolchains]]
@@ -11,6 +11,22 @@ license = "GPL-3.0-or-later WITH GCC-exception-3.1"
 source_type = "build"
 compiler = "g++"
 origin = "scrap-release"
+
+[[toolchains.ingots]]
+platform = "linux"
+arch = "aarch64"
+registry = "ghcr.io/skipbit/scrap-toolchain"
+tag = "gcc:15.2.0"
+digest = "sha256:ae6580d7b351baf4b03a14a58e5896590a782eaf0147700f1328c0918af771ef"
+glibc_version = "2.17"
+
+[[toolchains.ingots]]
+platform = "linux"
+arch = "x86_64"
+registry = "ghcr.io/skipbit/scrap-toolchain"
+tag = "gcc:15.2.0"
+digest = "sha256:3d84fab685cd8a52fd0c2a9896aff9be37d99a4f1dad7abbb4f89617836a6c23"
+glibc_version = "2.17"
 
 [[toolchains]]
 family = "llvm"
