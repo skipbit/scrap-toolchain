@@ -15,6 +15,11 @@ stdlib = "libstdc++"
 [source]
 type = "build"
 
+# GCC 15.2.0 does not support aarch64-apple-darwin natively.
+# Homebrew applies custom patches (iains/gcc-14-branch) to enable it.
+[source.platforms]
+supported = ["linux-x86_64", "linux-aarch64"]
+
 [source.build]
 source_url = "https://ftp.gnu.org/gnu/gcc/gcc-15.2.0/gcc-15.2.0.tar.xz"
 source_sha256 = "438fd996826b0c82485a29da03a72d71d6e3541a83ec702df4271f6fe025d24e"

@@ -183,7 +183,9 @@ jobs:
           done
 
           # === Step 3: Generate build matrix ===
-          # Cross each build-type mold with all Tier 1 platforms from platforms.toml.
+          # Cross each build-type mold with its supported platforms.
+          # If source.platforms.supported is specified, only those platforms are used.
+          # Otherwise, all Tier 1 platforms from platforms.toml are used.
           # The matrix is consumed by cast-build-configure/make/package jobs.
 
           if [[ "$HAS_BUILD" == "true" ]]; then
@@ -213,21 +215,33 @@ jobs:
           mold = os.environ['MOLD_VAR']
           with open(f'{mold}/mold.toml', 'rb') as f:
               data = tomllib.load(f)
+          supported = data.get('source', {}).get('platforms', {}).get('supported', [])
           print(json.dumps({
               'family': data['metadata']['family'],
               'version': data['metadata']['version'],
-              'glibc_min': data.get('source', {}).get('glibc_min', '')
+              'glibc_min': data.get('source', {}).get('glibc_min', ''),
+              'supported_platforms': supported
           }))
           ")
 
               FAMILY=$(echo "$MOLD_META" | jq -r '.family')
               VERSION=$(echo "$MOLD_META" | jq -r '.version')
               GLIBC_MIN=$(echo "$MOLD_META" | jq -r '.glibc_min')
+              SUPPORTED_PLATFORMS=$(echo "$MOLD_META" | jq -r '.supported_platforms | if length > 0 then .[] else empty end')
 
               while IFS= read -r platform_entry; do
                 [[ -z "$platform_entry" ]] && continue
                 PLAT=$(echo "$platform_entry" | jq -r '.platform')
                 ARCH=$(echo "$platform_entry" | jq -r '.arch')
+
+                # Filter by mold's supported platforms if specified
+                if [[ -n "$SUPPORTED_PLATFORMS" ]]; then
+                  PLATFORM_ID="${PLAT}-${ARCH}"
+                  if ! echo "$SUPPORTED_PLATFORMS" | grep -qx "$PLATFORM_ID"; then
+                    echo "  Skip: ${mold} ${PLATFORM_ID} (not in source.platforms.supported)"
+                    continue
+                  fi
+                fi
                 RUNNER=$(echo "$platform_entry" | jq -r '.runner')
                 CONTAINER=$(echo "$platform_entry" | jq -r '.container // ""')
 
@@ -615,7 +629,7 @@ jobs:
             MOLD_META_FILES["$KEY"]+="${meta_file}"$'\n'
           done
 
-          # Read Tier 1 platform count for completeness check
+          # Read Tier 1 platform count (default for molds without source.platforms)
           TIER1_COUNT=$(python3 -c "
           import tomllib
           with open('platforms.toml', 'rb') as f:
@@ -634,12 +648,31 @@ jobs:
             [[ -z "${META_LIST[-1]}" ]] && unset 'META_LIST[-1]'
             PLATFORM_COUNT=${#META_LIST[@]}
 
-            echo ""
-            echo "=== Processing: ${key} (${PLATFORM_COUNT}/${TIER1_COUNT} platforms) ==="
+            # Determine expected platform count: intersect source.platforms.supported
+            # with Tier 1 platforms. If source.platforms is omitted, use Tier 1 count.
+            MOLD_DIR="molds/${key}"
+            EXPECTED_COUNT=$(MOLD_VAR="$MOLD_DIR" python3 -c "
+          import tomllib, os
+          mold = os.environ['MOLD_VAR']
+          with open(f'{mold}/mold.toml', 'rb') as f:
+              mold_data = tomllib.load(f)
+          with open('platforms.toml', 'rb') as f:
+              plat_data = tomllib.load(f)
+          tier1_ids = {f\"{p['platform']}-{p['arch']}\" for p in plat_data['platforms']['tier1']}
+          supported = mold_data.get('source', {}).get('platforms', {}).get('supported', [])
+          if supported:
+              count = len(set(supported) & tier1_ids)
+          else:
+              count = len(tier1_ids)
+          print(count)
+          ")
 
-            # Per-mold completeness check: skip if not all Tier 1 platforms present
-            if [[ "$PLATFORM_COUNT" -lt "$TIER1_COUNT" ]]; then
-              echo "::warning::Skipping ${key}: only ${PLATFORM_COUNT}/${TIER1_COUNT} platforms available"
+            echo ""
+            echo "=== Processing: ${key} (${PLATFORM_COUNT}/${EXPECTED_COUNT} platforms) ==="
+
+            # Per-mold completeness check: skip if not all expected platforms present
+            if [[ "$PLATFORM_COUNT" -lt "$EXPECTED_COUNT" ]]; then
+              echo "::warning::Skipping ${key}: only ${PLATFORM_COUNT}/${EXPECTED_COUNT} platforms available"
               SKIP_COUNT=$((SKIP_COUNT + 1))
               continue
             fi
