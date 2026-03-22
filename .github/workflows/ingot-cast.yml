@@ -648,16 +648,23 @@ jobs:
             [[ -z "${META_LIST[-1]}" ]] && unset 'META_LIST[-1]'
             PLATFORM_COUNT=${#META_LIST[@]}
 
-            # Determine expected platform count: use source.platforms.supported
-            # if specified, otherwise fall back to Tier 1 count.
+            # Determine expected platform count: intersect source.platforms.supported
+            # with Tier 1 platforms. If source.platforms is omitted, use Tier 1 count.
             MOLD_DIR="molds/${key}"
             EXPECTED_COUNT=$(MOLD_VAR="$MOLD_DIR" python3 -c "
           import tomllib, os
           mold = os.environ['MOLD_VAR']
           with open(f'{mold}/mold.toml', 'rb') as f:
-              data = tomllib.load(f)
-          supported = data.get('source', {}).get('platforms', {}).get('supported', [])
-          print(len(supported) if supported else ${TIER1_COUNT})
+              mold_data = tomllib.load(f)
+          with open('platforms.toml', 'rb') as f:
+              plat_data = tomllib.load(f)
+          tier1_ids = {f\"{p['platform']}-{p['arch']}\" for p in plat_data['platforms']['tier1']}
+          supported = mold_data.get('source', {}).get('platforms', {}).get('supported', [])
+          if supported:
+              count = len(set(supported) & tier1_ids)
+          else:
+              count = len(tier1_ids)
+          print(count)
           ")
 
             echo ""

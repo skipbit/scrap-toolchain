@@ -125,6 +125,7 @@
             "pattern": "^(linux|darwin)-(x86_64|aarch64)$"
           },
           "minItems": 1,
+          "uniqueItems": true,
           "description": "Platforms this mold officially supports. If omitted, all Tier 1 platforms are assumed."
         }
       }
