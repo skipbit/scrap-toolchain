@@ -844,53 +844,73 @@ elif [[ "$SOURCE_TYPE" == "build" ]]; then
             [[ -n "$_pkg" ]] && APT_PACKAGES+=("$_pkg")
         done < <(jq -r '.source.build.prerequisites.apt // [] | .[]' "$MOLD_JSON")
 
-        # --- Step 6b: Inject Homebrew paths (configure stage, macOS only) ---
-        if [[ ${#APT_PACKAGES[@]} -gt 0 ]] && [[ "$PLATFORM" != "linux" ]]; then
-            # GNU build systems (autoconf) need explicit --with-xxx paths to
-            # find libraries installed via Homebrew because /opt/homebrew is
-            # not in the default search path.
-            # NOTE: Only applies to autoconf (./configure). CMake projects
-            # require different variable names (e.g. -DGMP_ROOT).
-            HB_PREFIX=""
-            if command -v brew &>/dev/null; then
-                HB_PREFIX="$(brew --prefix 2>/dev/null || true)"
-            fi
-            if [[ -z "$HB_PREFIX" ]] && [[ -d /opt/homebrew ]]; then
-                HB_PREFIX="/opt/homebrew"
-            elif [[ -z "$HB_PREFIX" ]] && [[ -d /usr/local/Cellar ]]; then
-                HB_PREFIX="/usr/local"
-            fi
+        # --- Step 6b: macOS configure adjustments (configure stage only) ---
+        if [[ "$PLATFORM" != "linux" ]] && [[ -x "${SOURCE_DIR}/configure" ]]; then
 
-            if [[ -n "$HB_PREFIX" ]] && [[ -x "${SOURCE_DIR}/configure" ]]; then
-                for pkg in "${APT_PACKAGES[@]}"; do
-                    _flag_name=""
-                    case "$pkg" in
-                        libgmp-dev)  _flag_name="gmp" ;;
-                        libmpfr-dev) _flag_name="mpfr" ;;
-                        libmpc-dev)  _flag_name="mpc" ;;
-                        libisl-dev)  _flag_name="isl" ;;
-                    esac
+            # 6b-1: Inject Homebrew library paths (--with-gmp/mpfr/mpc/isl)
+            if [[ ${#APT_PACKAGES[@]} -gt 0 ]]; then
+                HB_PREFIX=""
+                if command -v brew &>/dev/null; then
+                    HB_PREFIX="$(brew --prefix 2>/dev/null || true)"
+                fi
+                if [[ -z "$HB_PREFIX" ]] && [[ -d /opt/homebrew ]]; then
+                    HB_PREFIX="/opt/homebrew"
+                elif [[ -z "$HB_PREFIX" ]] && [[ -d /usr/local/Cellar ]]; then
+                    HB_PREFIX="/usr/local"
+                fi
 
-                    if [[ -z "$_flag_name" ]]; then
-                        continue
-                    fi
-
-                    # Skip if mold already specifies --with-xxx or --without-xxx
-                    _skip=0
-                    for _arg in "${CONFIGURE_ARGS[@]}"; do
-                        case "$_arg" in
-                            --with-${_flag_name}=*|--with-${_flag_name}|--without-${_flag_name}|--without-${_flag_name}=*)
-                                _skip=1
-                                break
-                                ;;
+                if [[ -n "$HB_PREFIX" ]]; then
+                    for pkg in "${APT_PACKAGES[@]}"; do
+                        _flag_name=""
+                        case "$pkg" in
+                            libgmp-dev)  _flag_name="gmp" ;;
+                            libmpfr-dev) _flag_name="mpfr" ;;
+                            libmpc-dev)  _flag_name="mpc" ;;
+                            libisl-dev)  _flag_name="isl" ;;
                         esac
-                    done
 
-                    if [[ $_skip -eq 0 ]]; then
-                        CONFIGURE_ARGS+=("--with-${_flag_name}=${HB_PREFIX}")
-                        info "macOS: injected --with-${_flag_name}=${HB_PREFIX}"
-                    fi
-                done
+                        if [[ -z "$_flag_name" ]]; then
+                            continue
+                        fi
+
+                        _skip=0
+                        for _arg in "${CONFIGURE_ARGS[@]}"; do
+                            case "$_arg" in
+                                --with-${_flag_name}=*|--with-${_flag_name}|--without-${_flag_name}|--without-${_flag_name}=*)
+                                    _skip=1
+                                    break
+                                    ;;
+                            esac
+                        done
+
+                        if [[ $_skip -eq 0 ]]; then
+                            CONFIGURE_ARGS+=("--with-${_flag_name}=${HB_PREFIX}")
+                            info "macOS: injected --with-${_flag_name}=${HB_PREFIX}"
+                        fi
+                    done
+                fi
+            fi
+
+            # 6b-2: Inject macOS SDK sysroot
+            # On modern macOS, system headers are not in /usr/include but
+            # inside the SDK. GCC needs --with-sysroot to find them during
+            # compilation of runtime libraries (libgcc, libstdc++, etc.).
+            _has_sysroot=0
+            for _arg in "${CONFIGURE_ARGS[@]}"; do
+                case "$_arg" in
+                    --with-sysroot=*|--with-sysroot|--without-sysroot)
+                        _has_sysroot=1
+                        break
+                        ;;
+                esac
+            done
+
+            if [[ $_has_sysroot -eq 0 ]] && command -v xcrun &>/dev/null; then
+                SDK_PATH="$(xcrun --sdk macosx --show-sdk-path 2>/dev/null || true)"
+                if [[ -n "$SDK_PATH" ]] && [[ -d "$SDK_PATH" ]]; then
+                    CONFIGURE_ARGS+=("--with-sysroot=${SDK_PATH}")
+                    info "macOS: injected --with-sysroot=${SDK_PATH}"
+                fi
             fi
         fi
         echo ""
@@ -941,7 +961,12 @@ elif [[ "$SOURCE_TYPE" == "build" ]]; then
 
         if [[ "$CONFIGURE_EXIT" -ne 0 ]]; then
             fail "Configure failed (exit code: ${CONFIGURE_EXIT})"
-            info "See configure.log for details"
+            # Copy build logs to stage artifact dir for CI upload
+            if [[ -n "${STAGE_ARTIFACT_DIR:-}" ]]; then
+                cp -f "${RUN_DIR}/configure.log" "${STAGE_ARTIFACT_DIR}/configure.log" 2>/dev/null || true
+            fi
+            echo "--- Last 50 lines of configure.log ---"
+            tail -50 "${RUN_DIR}/configure.log" 2>/dev/null || true
             add_summary "- :x: Configure failed"
             exit 2
         fi
@@ -1005,13 +1030,21 @@ elif [[ "$SOURCE_TYPE" == "build" ]]; then
         set +e
         (
             cd "$BUILD_DIR"
-            make "${MAKE_ARGS[@]}" 2>&1 | tail -20
+            make "${MAKE_ARGS[@]}" 2>&1 | tee "${RUN_DIR}/make.log" | tail -20
         )
         MAKE_EXIT=$?
         set -e
 
         if [[ "$MAKE_EXIT" -ne 0 ]]; then
             fail "Make failed (exit code: ${MAKE_EXIT})"
+            # Copy build logs to stage artifact dir for CI upload
+            if [[ -n "${STAGE_ARTIFACT_DIR:-}" ]]; then
+                cp -f "${RUN_DIR}/make.log" "${STAGE_ARTIFACT_DIR}/make.log" 2>/dev/null || true
+                cp -f "${RUN_DIR}/configure.log" "${STAGE_ARTIFACT_DIR}/configure.log" 2>/dev/null || true
+            fi
+            # Show last 50 lines of make.log for more context
+            echo "--- Last 50 lines of make.log ---"
+            tail -50 "${RUN_DIR}/make.log" 2>/dev/null || true
             add_summary "- :x: Make failed"
             exit 1
         fi
