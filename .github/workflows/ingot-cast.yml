@@ -106,7 +106,8 @@ jobs:
 
             CHANGED_MOLDS=()
 
-            # --- Infrastructure change: include ALL existing build-type molds ---
+            # --- Infrastructure change: include ALL existing molds ---
+            # (fetch vs build filtering happens in Step 2 below)
             if [[ -n "$INFRA_CHANGED" ]]; then
               echo "Infrastructure change detected:"
               echo "$INFRA_CHANGED" | while IFS= read -r f; do echo "  - $f"; done
