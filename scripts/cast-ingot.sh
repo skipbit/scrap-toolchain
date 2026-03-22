@@ -823,6 +823,54 @@ elif [[ "$SOURCE_TYPE" == "build" ]]; then
                     exit 3
                 fi
                 pass "Build dependencies verified on macOS"
+
+                # Detect Homebrew prefix and inject --with-xxx flags for
+                # autoconf projects. GNU build systems need explicit paths
+                # to find libraries installed via Homebrew because
+                # /opt/homebrew is not in the default search path.
+                # NOTE: Only applies to autoconf (./configure). CMake
+                # projects require different variable names (e.g. -DGMP_ROOT).
+                HB_PREFIX=""
+                if command -v brew &>/dev/null; then
+                    HB_PREFIX="$(brew --prefix 2>/dev/null || true)"
+                fi
+                if [[ -z "$HB_PREFIX" ]] && [[ -d /opt/homebrew ]]; then
+                    HB_PREFIX="/opt/homebrew"
+                elif [[ -z "$HB_PREFIX" ]] && [[ -d /usr/local/Cellar ]]; then
+                    HB_PREFIX="/usr/local"
+                fi
+
+                if [[ -n "$HB_PREFIX" ]] && [[ -x "${SOURCE_DIR}/configure" ]]; then
+                    for pkg in "${APT_PACKAGES[@]}"; do
+                        _flag_name=""
+                        case "$pkg" in
+                            libgmp-dev)  _flag_name="gmp" ;;
+                            libmpfr-dev) _flag_name="mpfr" ;;
+                            libmpc-dev)  _flag_name="mpc" ;;
+                            libisl-dev)  _flag_name="isl" ;;
+                        esac
+
+                        if [[ -z "$_flag_name" ]]; then
+                            continue
+                        fi
+
+                        # Skip if mold already specifies --with-xxx or --without-xxx
+                        _skip=0
+                        for _arg in "${CONFIGURE_ARGS[@]}"; do
+                            case "$_arg" in
+                                --with-${_flag_name}=*|--with-${_flag_name}|--without-${_flag_name}|--without-${_flag_name}=*)
+                                    _skip=1
+                                    break
+                                    ;;
+                            esac
+                        done
+
+                        if [[ $_skip -eq 0 ]]; then
+                            CONFIGURE_ARGS+=("--with-${_flag_name}=${HB_PREFIX}")
+                            info "macOS: injected --with-${_flag_name}=${HB_PREFIX}"
+                        fi
+                    done
+                fi
             fi
         else
             info "No prerequisites defined"
