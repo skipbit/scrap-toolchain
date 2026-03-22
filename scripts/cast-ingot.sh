@@ -108,6 +108,92 @@ compute_sha256() {
     fi
 }
 
+# Install build prerequisites from mold.toml.
+# Called in every stage (configure, make, package) because each CI
+# stage uses a separate container that starts without mold-specific
+# dependencies. apt-get install is idempotent so repeated calls are safe.
+install_prerequisites() {
+    local mold_json="$1"
+    local platform="$2"
+    local run_dir="$3"
+
+    local -a apt_packages=()
+    while IFS= read -r _pkg; do
+        [[ -n "$_pkg" ]] && apt_packages+=("$_pkg")
+    done < <(jq -r '.source.build.prerequisites.apt // [] | .[]' "$mold_json")
+
+    if [[ ${#apt_packages[@]} -eq 0 ]]; then
+        info "No prerequisites defined"
+        return 0
+    fi
+
+    if [[ "$platform" == "linux" ]]; then
+        info "Installing: ${apt_packages[*]}"
+
+        local apt_prefix=""
+        if [[ "$(id -u)" -ne 0 ]]; then
+            if command -v sudo &>/dev/null; then
+                apt_prefix="sudo"
+            else
+                fail "Not running as root and sudo is not available"
+                return 3
+            fi
+        fi
+
+        set +e
+        $apt_prefix apt-get update -qq 2>"${run_dir}/apt_stderr"
+        $apt_prefix apt-get install -y -qq "${apt_packages[@]}" 2>>"${run_dir}/apt_stderr"
+        local apt_exit=$?
+        set -e
+
+        if [[ "$apt_exit" -ne 0 ]]; then
+            local apt_error
+            apt_error=$(cat "${run_dir}/apt_stderr")
+            fail "Failed to install prerequisites: ${apt_error}"
+            return 3
+        fi
+
+        pass "Prerequisites installed"
+    else
+        # macOS: apt is not available. Check that build dependencies
+        # can be found in standard Homebrew locations.
+        warn "apt prerequisites not available on ${platform}; checking for pre-installed libraries"
+
+        local -a missing_deps=()
+        local pkg
+        for pkg in "${apt_packages[@]}"; do
+            case "$pkg" in
+                libgmp-dev)
+                    [[ -f /opt/homebrew/include/gmp.h || -f /usr/local/include/gmp.h ]] \
+                        || missing_deps+=("gmp")
+                    ;;
+                libmpfr-dev)
+                    [[ -f /opt/homebrew/include/mpfr.h || -f /usr/local/include/mpfr.h ]] \
+                        || missing_deps+=("mpfr")
+                    ;;
+                libmpc-dev)
+                    [[ -f /opt/homebrew/include/mpc.h || -f /usr/local/include/mpc.h ]] \
+                        || missing_deps+=("libmpc")
+                    ;;
+                libisl-dev)
+                    [[ -f /opt/homebrew/include/isl/ctx.h || -f /usr/local/include/isl/ctx.h ]] \
+                        || missing_deps+=("isl")
+                    ;;
+                *)
+                    warn "Cannot verify macOS availability of: ${pkg}"
+                    ;;
+            esac
+        done
+
+        if [[ ${#missing_deps[@]} -gt 0 ]]; then
+            fail "Missing build dependencies on macOS: ${missing_deps[*]}"
+            info "Install with: brew install ${missing_deps[*]}"
+            return 3
+        fi
+        pass "Build dependencies verified on macOS"
+    fi
+}
+
 # Resolve a path to its canonical form (resolves symlinks).
 # Portable across Linux and macOS via Python.
 resolve_path() {
@@ -751,129 +837,61 @@ elif [[ "$SOURCE_TYPE" == "build" ]]; then
 
         # --- Step 6: Install prerequisites ---
         echo -e "${BOLD}6. Install prerequisites${RESET}"
+        install_prerequisites "$MOLD_JSON" "$PLATFORM" "$RUN_DIR" || exit $?
 
         APT_PACKAGES=()
         while IFS= read -r _pkg; do
             [[ -n "$_pkg" ]] && APT_PACKAGES+=("$_pkg")
         done < <(jq -r '.source.build.prerequisites.apt // [] | .[]' "$MOLD_JSON")
 
-        if [[ ${#APT_PACKAGES[@]} -gt 0 ]]; then
-            if [[ "$PLATFORM" == "linux" ]]; then
-                info "Installing: ${APT_PACKAGES[*]}"
-
-                # In containers we run as root (no sudo needed).
-                # On host runners, use sudo if available.
-                APT_PREFIX=""
-                if [[ "$(id -u)" -ne 0 ]]; then
-                    if command -v sudo &>/dev/null; then
-                        APT_PREFIX="sudo"
-                    else
-                        fail "Not running as root and sudo is not available"
-                        exit 3
-                    fi
-                fi
-
-                set +e
-                $APT_PREFIX apt-get update -qq 2>"${RUN_DIR}/apt_stderr"
-                $APT_PREFIX apt-get install -y -qq "${APT_PACKAGES[@]}" 2>>"${RUN_DIR}/apt_stderr"
-                APT_EXIT=$?
-                set -e
-
-                if [[ "$APT_EXIT" -ne 0 ]]; then
-                    APT_ERROR=$(cat "${RUN_DIR}/apt_stderr")
-                    fail "Failed to install prerequisites: ${APT_ERROR}"
-                    exit 3
-                fi
-
-                pass "Prerequisites installed"
-            else
-                # macOS: apt is not available. Check that build dependencies
-                # can be found in standard Homebrew locations.
-                warn "apt prerequisites not available on ${PLATFORM}; checking for pre-installed libraries"
-
-                MISSING_DEPS=()
-                for pkg in "${APT_PACKAGES[@]}"; do
-                    case "$pkg" in
-                        libgmp-dev)
-                            [[ -f /opt/homebrew/include/gmp.h || -f /usr/local/include/gmp.h ]] \
-                                || MISSING_DEPS+=("gmp")
-                            ;;
-                        libmpfr-dev)
-                            [[ -f /opt/homebrew/include/mpfr.h || -f /usr/local/include/mpfr.h ]] \
-                                || MISSING_DEPS+=("mpfr")
-                            ;;
-                        libmpc-dev)
-                            [[ -f /opt/homebrew/include/mpc.h || -f /usr/local/include/mpc.h ]] \
-                                || MISSING_DEPS+=("libmpc")
-                            ;;
-                        libisl-dev)
-                            [[ -f /opt/homebrew/include/isl/ctx.h || -f /usr/local/include/isl/ctx.h ]] \
-                                || MISSING_DEPS+=("isl")
-                            ;;
-                        *)
-                            # Unknown package; skip check with warning
-                            warn "Cannot verify macOS availability of: ${pkg}"
-                            ;;
-                    esac
-                done
-
-                if [[ ${#MISSING_DEPS[@]} -gt 0 ]]; then
-                    fail "Missing build dependencies on macOS: ${MISSING_DEPS[*]}"
-                    info "Install with: brew install ${MISSING_DEPS[*]}"
-                    exit 3
-                fi
-                pass "Build dependencies verified on macOS"
-
-                # Detect Homebrew prefix and inject --with-xxx flags for
-                # autoconf projects. GNU build systems need explicit paths
-                # to find libraries installed via Homebrew because
-                # /opt/homebrew is not in the default search path.
-                # NOTE: Only applies to autoconf (./configure). CMake
-                # projects require different variable names (e.g. -DGMP_ROOT).
-                HB_PREFIX=""
-                if command -v brew &>/dev/null; then
-                    HB_PREFIX="$(brew --prefix 2>/dev/null || true)"
-                fi
-                if [[ -z "$HB_PREFIX" ]] && [[ -d /opt/homebrew ]]; then
-                    HB_PREFIX="/opt/homebrew"
-                elif [[ -z "$HB_PREFIX" ]] && [[ -d /usr/local/Cellar ]]; then
-                    HB_PREFIX="/usr/local"
-                fi
-
-                if [[ -n "$HB_PREFIX" ]] && [[ -x "${SOURCE_DIR}/configure" ]]; then
-                    for pkg in "${APT_PACKAGES[@]}"; do
-                        _flag_name=""
-                        case "$pkg" in
-                            libgmp-dev)  _flag_name="gmp" ;;
-                            libmpfr-dev) _flag_name="mpfr" ;;
-                            libmpc-dev)  _flag_name="mpc" ;;
-                            libisl-dev)  _flag_name="isl" ;;
-                        esac
-
-                        if [[ -z "$_flag_name" ]]; then
-                            continue
-                        fi
-
-                        # Skip if mold already specifies --with-xxx or --without-xxx
-                        _skip=0
-                        for _arg in "${CONFIGURE_ARGS[@]}"; do
-                            case "$_arg" in
-                                --with-${_flag_name}=*|--with-${_flag_name}|--without-${_flag_name}|--without-${_flag_name}=*)
-                                    _skip=1
-                                    break
-                                    ;;
-                            esac
-                        done
-
-                        if [[ $_skip -eq 0 ]]; then
-                            CONFIGURE_ARGS+=("--with-${_flag_name}=${HB_PREFIX}")
-                            info "macOS: injected --with-${_flag_name}=${HB_PREFIX}"
-                        fi
-                    done
-                fi
+        # --- Step 6b: Inject Homebrew paths (configure stage, macOS only) ---
+        if [[ ${#APT_PACKAGES[@]} -gt 0 ]] && [[ "$PLATFORM" != "linux" ]]; then
+            # GNU build systems (autoconf) need explicit --with-xxx paths to
+            # find libraries installed via Homebrew because /opt/homebrew is
+            # not in the default search path.
+            # NOTE: Only applies to autoconf (./configure). CMake projects
+            # require different variable names (e.g. -DGMP_ROOT).
+            HB_PREFIX=""
+            if command -v brew &>/dev/null; then
+                HB_PREFIX="$(brew --prefix 2>/dev/null || true)"
             fi
-        else
-            info "No prerequisites defined"
+            if [[ -z "$HB_PREFIX" ]] && [[ -d /opt/homebrew ]]; then
+                HB_PREFIX="/opt/homebrew"
+            elif [[ -z "$HB_PREFIX" ]] && [[ -d /usr/local/Cellar ]]; then
+                HB_PREFIX="/usr/local"
+            fi
+
+            if [[ -n "$HB_PREFIX" ]] && [[ -x "${SOURCE_DIR}/configure" ]]; then
+                for pkg in "${APT_PACKAGES[@]}"; do
+                    _flag_name=""
+                    case "$pkg" in
+                        libgmp-dev)  _flag_name="gmp" ;;
+                        libmpfr-dev) _flag_name="mpfr" ;;
+                        libmpc-dev)  _flag_name="mpc" ;;
+                        libisl-dev)  _flag_name="isl" ;;
+                    esac
+
+                    if [[ -z "$_flag_name" ]]; then
+                        continue
+                    fi
+
+                    # Skip if mold already specifies --with-xxx or --without-xxx
+                    _skip=0
+                    for _arg in "${CONFIGURE_ARGS[@]}"; do
+                        case "$_arg" in
+                            --with-${_flag_name}=*|--with-${_flag_name}|--without-${_flag_name}|--without-${_flag_name}=*)
+                                _skip=1
+                                break
+                                ;;
+                        esac
+                    done
+
+                    if [[ $_skip -eq 0 ]]; then
+                        CONFIGURE_ARGS+=("--with-${_flag_name}=${HB_PREFIX}")
+                        info "macOS: injected --with-${_flag_name}=${HB_PREFIX}"
+                    fi
+                done
+            fi
         fi
         echo ""
 
@@ -972,6 +990,10 @@ elif [[ "$SOURCE_TYPE" == "build" ]]; then
             rm -rf "$SOURCE_DIR" "$BUILD_DIR"
             tar -xzf "${STAGE_ARTIFACT_DIR}/configure-tree.tar.gz" -C "$BASE_WORK_DIR"
             pass "Configure stage artifact loaded"
+
+            # Install prerequisites in make stage container
+            echo -e "${BOLD}6. Install prerequisites${RESET}"
+            install_prerequisites "$MOLD_JSON" "$PLATFORM" "$RUN_DIR" || exit $?
             echo ""
         fi
 
@@ -1089,6 +1111,10 @@ elif [[ "$SOURCE_TYPE" == "build" ]]; then
             mkdir -p "$STAGING_DIR"
             tar -xzf "${STAGE_ARTIFACT_DIR}/installed-tree.tar.gz" -C "$STAGING_DIR"
             pass "Make stage artifact loaded"
+
+            # Install prerequisites in package stage container
+            echo -e "${BOLD}6. Install prerequisites${RESET}"
+            install_prerequisites "$MOLD_JSON" "$PLATFORM" "$RUN_DIR" || exit $?
             echo ""
         fi
 
