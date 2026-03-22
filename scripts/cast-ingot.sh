@@ -823,6 +823,46 @@ elif [[ "$SOURCE_TYPE" == "build" ]]; then
                     exit 3
                 fi
                 pass "Build dependencies verified on macOS"
+
+                # Detect Homebrew prefix and inject --with-xxx flags for
+                # configure. GNU build systems (autoconf) need explicit
+                # paths to find libraries installed via Homebrew because
+                # /opt/homebrew is not in the default search path.
+                HB_PREFIX=""
+                if [[ -d /opt/homebrew ]]; then
+                    HB_PREFIX="/opt/homebrew"
+                elif [[ -d /usr/local/Cellar ]]; then
+                    HB_PREFIX="/usr/local"
+                fi
+
+                if [[ -n "$HB_PREFIX" ]]; then
+                    # Map apt package names to autoconf --with-xxx flag names
+                    declare -A _HB_FLAG_MAP=(
+                        [libgmp-dev]="gmp"
+                        [libmpfr-dev]="mpfr"
+                        [libmpc-dev]="mpc"
+                        [libisl-dev]="isl"
+                    )
+                    for pkg in "${APT_PACKAGES[@]}"; do
+                        _flag_name="${_HB_FLAG_MAP[$pkg]:-}"
+                        if [[ -z "$_flag_name" ]]; then
+                            continue
+                        fi
+                        # Skip if mold already specifies --with-xxx
+                        _already_set=false
+                        for _arg in "${CONFIGURE_ARGS[@]}"; do
+                            if [[ "$_arg" == --with-${_flag_name}=* ]]; then
+                                _already_set=true
+                                break
+                            fi
+                        done
+                        if [[ "$_already_set" == "false" ]]; then
+                            CONFIGURE_ARGS+=("--with-${_flag_name}=${HB_PREFIX}")
+                            info "macOS: injected --with-${_flag_name}=${HB_PREFIX}"
+                        fi
+                    done
+                    unset _HB_FLAG_MAP
+                fi
             fi
         else
             info "No prerequisites defined"
