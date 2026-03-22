@@ -109,8 +109,24 @@
           "pattern": "^[0-9]+\\.[0-9]+$",
           "description": "Minimum glibc version required by pre-built binaries (e.g., 2.34). When specified, the build container is selected to satisfy this requirement."
         },
+        "platforms": { "$ref": "#/$defs/platformSupport" },
         "build_fallback": { "$ref": "#/$defs/buildFallback" },
         "build": { "$ref": "#/$defs/buildDefinition" }
+      }
+    },
+    "platformSupport": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "supported": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "pattern": "^(linux|darwin)-(x86_64|aarch64)$"
+          },
+          "minItems": 1,
+          "description": "Platforms this mold officially supports. If omitted, all Tier 1 platforms are assumed."
+        }
       }
     },
     "sourceFetchRequired": {
