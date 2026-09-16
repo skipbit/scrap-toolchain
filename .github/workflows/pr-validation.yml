@@ -26,12 +26,12 @@ jobs:
       fetch_matrix: ${{ steps.classify.outputs.fetch_matrix }}
       build_molds: ${{ steps.classify.outputs.build_molds }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           fetch-depth: 0
 
       - name: Set up Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v7
         with:
           python-version: '3.12'
 
@@ -252,7 +252,7 @@ jobs:
       matrix: ${{ fromJSON(needs.detect-changes.outputs.fetch_matrix) }}
       fail-fast: false
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Install system prerequisites (Linux container)
         if: matrix.container
@@ -267,7 +267,7 @@ jobs:
 
       - name: Set up Python
         if: ${{ !matrix.container }}
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v7
         with:
           python-version: '3.12'
 
@@ -334,10 +334,10 @@ jobs:
         mold: ${{ fromJSON(needs.detect-changes.outputs.build_molds) }}
       fail-fast: false
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Set up Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v7
         with:
           python-version: '3.12'
 
