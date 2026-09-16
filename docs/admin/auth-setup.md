@@ -9,8 +9,8 @@ The pipeline has three workflows with distinct permission requirements:
 | Workflow | Trigger | Token Type | Permissions |
 |----------|---------|------------|-------------|
 | `pr-validation.yml` | `pull_request` | Default `GITHUB_TOKEN` | `contents: read`, `pull-requests: write` <!-- Required for posting validation failure comments on PRs --> |
-| `ingot-cast.yml` | `push` to main / `workflow_dispatch` | Default `GITHUB_TOKEN` | `contents: write` |
-| `index-update.yml` | `workflow_run` / `workflow_dispatch` | **GitHub App token** | `contents: write` |
+| `ingot-cast.yml` | `push` to main / `workflow_dispatch` | Default `GITHUB_TOKEN` | `contents: read`, `packages: write` <!-- Required for pushing ingots to ghcr.io --> |
+| `index-update.yml` | `workflow_run` / `workflow_dispatch` | **GitHub App token** (push) and default `GITHUB_TOKEN` (artifact download) | App: `contents: write`; workflow block: `contents: write`, `actions: read` <!-- actions: read is what the default token needs to download artifacts from the triggering run --> |
 
 ### Why index-update needs a GitHub App token
 
@@ -153,21 +153,49 @@ jobs:
 
 ### ingot-cast.yml
 
-Uses the default `GITHUB_TOKEN` — no additional secrets needed:
+Uses the default `GITHUB_TOKEN` — no additional secrets needed. Ingots are pushed to
+`ghcr.io` as OCI artifacts, which requires `packages: write`:
 
 ```yaml
 permissions:
-  contents: write
+  contents: read
+  packages: write
 
 jobs:
-  upload-release:
+  upload-package:
     steps:
-      - name: Create release
+      - name: Set up oras
+        uses: oras-project/setup-oras@v1
+        with:
+          version: '1.2.2'          # pinned: the push output is parsed as JSON
+
+      - name: Log in to ghcr.io
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GHCR_TOKEN: ${{ github.token }}
+          GHCR_USER: ${{ github.actor }}
+        run: echo "$GHCR_TOKEN" | oras login ghcr.io -u "$GHCR_USER" --password-stdin
+
+      - name: Push ingots
+        env:
+          REGISTRY: ghcr.io/${{ github.repository }}
         run: |
-          gh release create "${TAG}" ./artifacts/*.tar.xz ./artifacts/*.sha256
+          # FAMILY, VERSION, PLATFORM, ARCH and INGOT_PATH come from the mold
+          # and from the ingot metadata written by the build jobs.
+          REPO_REF="${REGISTRY}/${FAMILY}"
+
+          # One artifact per platform, tagged with the platform ...
+          oras push "${REPO_REF}:${VERSION}-${PLATFORM}-${ARCH}" \
+            --artifact-type "application/vnd.skipbit.scrap.ingot.v1+tar.xz" \
+            "${INGOT_PATH}:application/x-tar+xz"
+
+          # ... then an OCI index over them under the bare version tag.
+          oras manifest index create "${REPO_REF}:${VERSION}" \
+            "${REPO_REF}:${VERSION}-linux-x86_64" \
+            "${REPO_REF}:${VERSION}-linux-aarch64"
 ```
+
+The artifact type is what identifies a blob as a scrap ingot; `index.toml` records the
+per-platform digests, and the bare version tag is the OCI index over them.
 
 ### pr-validation.yml
 

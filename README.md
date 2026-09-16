@@ -27,13 +27,13 @@ scrap-toolchain/
 2. **PR Validation** — the mold is validated against `schema/mold-v1.schema.json`, and **fetch-type** molds are verified on Tier 1 platforms where binaries are defined (Linux platforms are mandatory; macOS is verified when a binary is available)
 3. On merge, **Ingot Cast** — CI processes the mold:
    - **fetch** molds: no artifacts produced (validation already done in step 2)
-   - **build** molds: CI builds the toolchain and uploads ingots to the distribution platform (not yet implemented)
+   - **build** molds: CI builds the toolchain and pushes ingots to `ghcr.io` as OCI artifacts
 4. **Index Update** — `index.toml` is regenerated from mold definitions and build artifacts, then committed to the repository
 
 ## Mold Types
 
 - **fetch** — References prebuilt binaries from upstream (e.g., LLVM official releases). CI validates the recipe but does not produce artifacts; users download directly from upstream.
-- **build** — Builds from source (e.g., GCC). CI produces ingots and uploads them to the distribution platform.
+- **build** — Builds from source (e.g., GCC). CI produces ingots and pushes them to `ghcr.io` as OCI artifacts.
 
 ## Platform Tiers
 
@@ -51,7 +51,7 @@ This repository is licensed under [MIT](LICENSE).
 | Toolchain | License | License Files | Status |
 |-----------|---------|---------------|--------|
 | LLVM/Clang | Apache-2.0 WITH LLVM-exception | `LICENSE.TXT` | Available |
-| GCC | GPL-3.0-or-later WITH GCC-exception-3.1 | `COPYING`, `COPYING.RUNTIME` | Planned |
+| GCC | GPL-3.0-or-later WITH GCC-exception-3.1 | `COPYING`, `COPYING.RUNTIME` | Available |
 
 ### How licensing works
 
