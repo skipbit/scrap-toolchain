@@ -299,10 +299,15 @@ collect_build_ingots() {
             manifest_count=$(jq '.manifests | length' <<< "$index_manifest" 2>/dev/null) || manifest_count=0
 
             for ((i = 0; i < manifest_count; i++)); do
-                local digest platform arch
-                read -r digest platform arch < <(
+                # glibc_version travels as an annotation on the descriptor,
+                # since the index is the only source here.
+                local digest platform arch glibc_version
+                IFS=$'\t' read -r digest platform arch glibc_version < <(
                     jq -r --argjson i "$i" \
-                        '[.manifests[$i].digest, (.manifests[$i].platform.os // ""), (.manifests[$i].platform.architecture // "")] | @tsv' \
+                        '[.manifests[$i].digest,
+                          (.manifests[$i].platform.os // ""),
+                          (.manifests[$i].platform.architecture // ""),
+                          (.manifests[$i].annotations["org.skipbit.scrap.glibc_version"] // "")] | @tsv' \
                         <<< "$index_manifest"
                 )
 
@@ -321,7 +326,9 @@ collect_build_ingots() {
                     --arg digest "$digest" \
                     --arg platform "$platform" \
                     --arg arch "$arch" \
-                    '{registry: $registry, tag: $tag, digest: $digest, platform: $platform, arch: $arch}')
+                    --arg glibc "$glibc_version" \
+                    '{registry: $registry, tag: $tag, digest: $digest, platform: $platform, arch: $arch}
+                    + if $glibc != "" then {glibc_version: $glibc} else {} end')
 
                 ingots=$(jq --argjson entry "$entry" '. + [$entry]' <<< "$ingots")
             done

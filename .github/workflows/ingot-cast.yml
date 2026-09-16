@@ -660,6 +660,10 @@ jobs:
           MANIFEST_DIR="package-manifests"
           mkdir -p "$MANIFEST_DIR"
 
+          # Assembled OCI Indexes. Kept out of MANIFEST_DIR, which is uploaded.
+          INDEX_DIR="oci-indexes"
+          mkdir -p "$INDEX_DIR"
+
           # Collect all ingot-metadata JSON files.
           # When build stages were skipped (e.g., partial failure), there may
           # be no artifacts at all — handle gracefully.
@@ -786,6 +790,7 @@ jobs:
             # --- Push each platform's ingot ---
             PUSH_FAILED=false
             ASSETS_JSON="[]"
+            INDEX_DESCRIPTORS="[]"
 
             for meta_file in "${META_LIST[@]}"; do
               # Read all fields in a single jq call
@@ -848,28 +853,43 @@ jobs:
                 break
               fi
 
-              read -r DIGEST SIZE MEDIA_TYPE ARTIFACT_TYPE < <(
-                jq -r '[.digest, .size, .mediaType, .artifactType] | map(. // "") | @tsv' <<< "$PUSH_OUTPUT"
-              )
-              if [[ -z "$DIGEST" || -z "$SIZE" || -z "$MEDIA_TYPE" ]]; then
+              # Validate the push output and describe this manifest for the
+              # OCI Index in one pass. Splitting the fields into shell
+              # variables would let a missing one shift into its neighbour.
+              #
+              # glibc_version rides along as an annotation: generate-index.sh
+              # reads the index when no build artifacts are at hand, and would
+              # otherwise lose it.
+              DESCRIPTOR=$(jq -e \
+                --arg os "$PLATFORM" \
+                --arg arch "$ARCH" \
+                --arg glibc "$GLIBC_VERSION" \
+                'select((.digest | strings | length) > 0)
+                 | select((.mediaType | strings | length) > 0)
+                 | select((.size | numbers) != null)
+                 | {mediaType, digest, size,
+                    platform: {os: $os,
+                               architecture: ({"x86_64": "amd64", "aarch64": "arm64"}[$arch] // $arch)}}
+                 + (if (.artifactType // "") != "" then {artifactType: .artifactType} else {} end)
+                 + (if $glibc != "" then {annotations: {"org.skipbit.scrap.glibc_version": $glibc}} else {} end)' \
+                <<< "$PUSH_OUTPUT" 2>/dev/null) || DESCRIPTOR=""
+              if [[ -z "$DESCRIPTOR" ]]; then
                 echo "::error::Incomplete push output for ${INGOT_FILE}"
                 PUSH_FAILED=true
                 break
               fi
+              INDEX_DESCRIPTORS=$(jq --argjson d "$DESCRIPTOR" '. + [$d]' <<< "$INDEX_DESCRIPTORS")
+
+              DIGEST=$(jq -r '.digest' <<< "$DESCRIPTOR")
               echo "  Pushed: digest=${DIGEST}"
 
-              # Build asset entry for package-manifest. size, media_type and
-              # artifact_type also describe this manifest in the OCI Index below.
+              # Build asset entry for package-manifest (including digest)
               ASSET_ENTRY=$(jq -n \
                 --arg ingot_file "$INGOT_FILE" \
                 --arg platform "$PLATFORM" \
                 --arg arch "$ARCH" \
                 --arg digest "$DIGEST" \
-                --argjson size "$SIZE" \
-                --arg media_type "$MEDIA_TYPE" \
-                --arg artifact_type "$ARTIFACT_TYPE" \
-                '{ingot_file: $ingot_file, platform: $platform, arch: $arch, digest: $digest,
-                  size: $size, media_type: $media_type, artifact_type: $artifact_type}')
+                '{ingot_file: $ingot_file, platform: $platform, arch: $arch, digest: $digest}')
               ASSETS_JSON=$(echo "$ASSETS_JSON" | jq --argjson entry "$ASSET_ENTRY" '. + [$entry]')
             done
 
@@ -907,49 +927,53 @@ jobs:
             # platform from an image config, which ingots do not carry.
             echo "  Creating OCI Index: ${REPO_REF}:${OCI_TAG}"
 
-            INDEX_FILE=$(mktemp)
-            jq -n --argjson assets "$ASSETS_JSON" '{
+            INDEX_FILE="${INDEX_DIR}/${FAMILY}-${VERSION}.json"
+            jq -n --argjson manifests "$INDEX_DESCRIPTORS" '{
               schemaVersion: 2,
               mediaType: "application/vnd.oci.image.index.v1+json",
-              manifests: [
-                $assets[] | {
-                  mediaType: .media_type,
-                  digest: .digest,
-                  size: .size,
-                  platform: {
-                    os: .platform,
-                    architecture: (
-                      {"x86_64": "amd64", "aarch64": "arm64"}[.arch] // .arch
-                    )
-                  }
-                }
-                + (if .artifact_type != "" then {artifactType: .artifact_type} else {} end)
-              ]
+              manifests: $manifests
             }' > "$INDEX_FILE"
 
-            # Read the tag back: an exit status of 0 is not evidence that the
-            # index exists.
             INDEX_PUSHED=false
-            if oras manifest push "${REPO_REF}:${OCI_TAG}" "$INDEX_FILE" \
-              --media-type "application/vnd.oci.image.index.v1+json"; then
-              # Retry once: the registry may not serve the tag right away.
-              for attempt in 1 2; do
-                if oras manifest fetch "${REPO_REF}:${OCI_TAG}" \
-                  | jq -e '.mediaType == "application/vnd.oci.image.index.v1+json"
-                           and (.manifests | length) > 0' >/dev/null; then
-                  INDEX_PUSHED=true
-                  break
-                fi
-                if [[ "$attempt" -lt 2 ]]; then
-                  echo "  Index not retrievable yet (attempt ${attempt}), retrying..."
-                  sleep 3
-                fi
-              done
-            fi
-            rm -f "$INDEX_FILE"
+            for attempt in 1 2; do
+              if oras manifest push "${REPO_REF}:${OCI_TAG}" "$INDEX_FILE" \
+                --media-type "application/vnd.oci.image.index.v1+json"; then
+                INDEX_PUSHED=true
+                break
+              fi
+              if [[ "$attempt" -lt 2 ]]; then
+                echo "  Index push failed (attempt ${attempt}), retrying..."
+                sleep 3
+              fi
+            done
 
             if [[ "$INDEX_PUSHED" != "true" ]]; then
-              echo "::error::OCI Index for ${key} is not retrievable at ${REPO_REF}:${OCI_TAG}"
+              echo "::error::Failed to push the OCI Index for ${key} to ${REPO_REF}:${OCI_TAG}"
+              FAILURE_COUNT=$((FAILURE_COUNT + 1))
+              continue
+            fi
+
+            # Read the tag back: an exit status of 0 is not evidence that the
+            # index is there. Compare the children with what was just pushed,
+            # so that an index left by another run does not pass for this one.
+            EXPECTED_DIGESTS=$(jq -c '[.[].digest] | sort' <<< "$INDEX_DESCRIPTORS")
+            INDEX_VERIFIED=false
+            for attempt in 1 2; do
+              if oras manifest fetch "${REPO_REF}:${OCI_TAG}" \
+                | jq -e --argjson expected "$EXPECTED_DIGESTS" \
+                  '.mediaType == "application/vnd.oci.image.index.v1+json"
+                   and ([.manifests[].digest] | sort) == $expected' >/dev/null; then
+                INDEX_VERIFIED=true
+                break
+              fi
+              if [[ "$attempt" -lt 2 ]]; then
+                echo "  Index not retrievable yet (attempt ${attempt}), retrying..."
+                sleep 3
+              fi
+            done
+
+            if [[ "$INDEX_VERIFIED" != "true" ]]; then
+              echo "::error::OCI Index at ${REPO_REF}:${OCI_TAG} does not read back as pushed for ${key}"
               FAILURE_COUNT=$((FAILURE_COUNT + 1))
               continue
             fi
@@ -982,7 +1006,11 @@ jobs:
             exit 1
           fi
 
+      # Uploaded even when a mold failed, so that one mold does not cost the
+      # others their manifests: Index Update runs on any conclusion, and
+      # without a manifest it rebuilds those entries from the registry.
       - name: Upload package manifests
+        if: ${{ !cancelled() }}
         uses: actions/upload-artifact@v7
         with:
           name: package-manifest
