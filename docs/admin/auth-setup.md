@@ -9,8 +9,8 @@ The pipeline has three workflows with distinct permission requirements:
 | Workflow | Trigger | Token Type | Permissions |
 |----------|---------|------------|-------------|
 | `pr-validation.yml` | `pull_request` | Default `GITHUB_TOKEN` | `contents: read`, `pull-requests: write` <!-- Required for posting validation failure comments on PRs --> |
-| `ingot-cast.yml` | `push` to main / `workflow_dispatch` | Default `GITHUB_TOKEN` | `contents: write` |
-| `index-update.yml` | `workflow_run` / `workflow_dispatch` | **GitHub App token** | `contents: write` |
+| `ingot-cast.yml` | `push` to main / `workflow_dispatch` | Default `GITHUB_TOKEN` | `contents: read`, `packages: write` <!-- Required for pushing ingots to ghcr.io --> |
+| `index-update.yml` | `workflow_run` / `workflow_dispatch` | **GitHub App token** | `contents: write`, `actions: read` <!-- actions: read is required for downloading artifacts from the triggering run --> |
 
 ### Why index-update needs a GitHub App token
 
@@ -153,20 +153,28 @@ jobs:
 
 ### ingot-cast.yml
 
-Uses the default `GITHUB_TOKEN` — no additional secrets needed:
+Uses the default `GITHUB_TOKEN` — no additional secrets needed. Ingots are pushed to
+`ghcr.io` as OCI artifacts, which requires `packages: write`:
 
 ```yaml
 permissions:
-  contents: write
+  contents: read
+  packages: write
 
 jobs:
-  upload-release:
+  upload-package:
     steps:
-      - name: Create release
+      - name: Set up oras
+        uses: oras-project/setup-oras@v1
+
+      - name: Log in to ghcr.io
+        run: echo "${{ github.token }}" | oras login ghcr.io -u "${{ github.actor }}" --password-stdin
+
+      - name: Push to ghcr.io
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REGISTRY: ghcr.io/${{ github.repository }}
         run: |
-          gh release create "${TAG}" ./artifacts/*.tar.xz ./artifacts/*.sha256
+          oras push "${REGISTRY}/${FAMILY}:${TAG}" ./artifacts/ingot.tar.xz
 ```
 
 ### pr-validation.yml
