@@ -409,7 +409,8 @@ fi
 TOOLCHAINS_JSON="[]"
 MOLD_ERRORS=0
 MOLD_PROCESSED=0
-MOLD_SKIPPED=0
+MOLD_DISABLED=0
+MOLD_DISABLED_NO_INGOTS=0
 
 for mold_path in "${MOLD_PATHS[@]}"; do
     # Parse mold.toml
@@ -434,13 +435,9 @@ json.dump(data, sys.stdout)
         continue
     fi
 
-    # Check status
+    # Lifecycle status. Disabled toolchains stay in the index so that consumers
+    # can tell a withdrawn toolchain from one that never existed.
     status=$(jq -r '.metadata.status // "active"' <<< "$mold_json")
-    if [[ "$status" == "disabled" ]]; then
-        info "Skipping disabled mold: ${mold_path}"
-        MOLD_SKIPPED=$((MOLD_SKIPPED + 1))
-        continue
-    fi
 
     # Extract metadata
     family=$(jq -r '.metadata.family // empty' <<< "$mold_json")
@@ -495,6 +492,9 @@ json.dump(data, sys.stdout)
 
     if [[ "$ingot_count" -gt 0 ]]; then
         pass "${family} ${version}: ${ingot_count} ingot(s)"
+    elif [[ "$status" == "disabled" ]]; then
+        warn "${family} ${version}: disabled with no ingots; listing it with an empty ingot list"
+        MOLD_DISABLED_NO_INGOTS=$((MOLD_DISABLED_NO_INGOTS + 1))
     else
         info "${family} ${version}: no ingots available"
     fi
@@ -524,6 +524,9 @@ json.dump(data, sys.stdout)
 
     TOOLCHAINS_JSON=$(jq --argjson tc "$tc_entry" '. + [$tc]' <<< "$TOOLCHAINS_JSON")
     MOLD_PROCESSED=$((MOLD_PROCESSED + 1))
+    if [[ "$status" == "disabled" ]]; then
+        MOLD_DISABLED=$((MOLD_DISABLED + 1))
+    fi
 done
 echo ""
 
@@ -603,7 +606,7 @@ print('\n'.join(lines) + '\n')
 mv "${TMPDIR_INDEX}/index.toml" "$INDEX_FILE"
 
 pass "Generated ${INDEX_FILE}"
-info "Toolchains: ${MOLD_PROCESSED}, Skipped (disabled): ${MOLD_SKIPPED}, Errors: ${MOLD_ERRORS}"
+info "Toolchains: ${MOLD_PROCESSED} (disabled: ${MOLD_DISABLED}), Errors: ${MOLD_ERRORS}"
 echo ""
 
 # --- Summary ---
@@ -612,8 +615,11 @@ echo -e "  ${GREEN}Index generated successfully.${RESET}"
 
 add_summary ""
 add_summary "- :white_check_mark: Index generated: ${MOLD_PROCESSED} toolchain(s)"
-if [[ "$MOLD_SKIPPED" -gt 0 ]]; then
-    add_summary "- :information_source: Skipped: ${MOLD_SKIPPED} disabled mold(s)"
+if [[ "$MOLD_DISABLED" -gt 0 ]]; then
+    add_summary "- :information_source: Listed: ${MOLD_DISABLED} disabled toolchain(s)"
+fi
+if [[ "$MOLD_DISABLED_NO_INGOTS" -gt 0 ]]; then
+    add_summary "- :warning: ${MOLD_DISABLED_NO_INGOTS} disabled toolchain(s) have no ingots"
 fi
 if [[ "$MOLD_ERRORS" -gt 0 ]]; then
     add_summary "- :warning: Errors: ${MOLD_ERRORS} mold(s) failed to parse"
