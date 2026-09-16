@@ -636,7 +636,10 @@ jobs:
           version: '1.2.2'
 
       - name: Log in to ghcr.io
-        run: echo "${{ github.token }}" | oras login ghcr.io -u "${{ github.actor }}" --password-stdin
+        env:
+          GHCR_TOKEN: ${{ github.token }}
+          GHCR_USER: ${{ github.actor }}
+        run: echo "$GHCR_TOKEN" | oras login ghcr.io -u "$GHCR_USER" --password-stdin
 
       - name: Download all artifacts
         id: download
