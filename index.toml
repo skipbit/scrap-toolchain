@@ -1,6 +1,6 @@
 [index]
 schema_version = 1
-generated_at = "2026-03-22T07:16:11Z"
+generated_at = "2026-09-16T09:18:14Z"
 generator = "scripts/generate-index.sh"
 
 [[toolchains]]
@@ -17,7 +17,7 @@ platform = "linux"
 arch = "aarch64"
 registry = "ghcr.io/skipbit/scrap-toolchain"
 tag = "gcc:15.2.0"
-digest = "sha256:ae6580d7b351baf4b03a14a58e5896590a782eaf0147700f1328c0918af771ef"
+digest = "sha256:f81e60483f652680216d3a46dfecfa4ab12c1b8a304720f34739385e4ae97350"
 glibc_version = "2.17"
 
 [[toolchains.ingots]]
@@ -25,7 +25,7 @@ platform = "linux"
 arch = "x86_64"
 registry = "ghcr.io/skipbit/scrap-toolchain"
 tag = "gcc:15.2.0"
-digest = "sha256:3d84fab685cd8a52fd0c2a9896aff9be37d99a4f1dad7abbb4f89617836a6c23"
+digest = "sha256:29ecebe04093d6eec4f8e86205f213d0a4e89c0515ac0435ceb2d57debc7cf08"
 glibc_version = "2.17"
 
 [[toolchains]]
