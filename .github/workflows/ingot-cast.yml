@@ -848,21 +848,28 @@ jobs:
                 break
               fi
 
-              DIGEST=$(jq -r '.digest // empty' <<< "$PUSH_OUTPUT")
-              if [[ -z "$DIGEST" ]]; then
-                echo "::error::No digest in push output for ${INGOT_FILE}"
+              read -r DIGEST SIZE MEDIA_TYPE ARTIFACT_TYPE < <(
+                jq -r '[.digest, .size, .mediaType, .artifactType] | map(. // "") | @tsv' <<< "$PUSH_OUTPUT"
+              )
+              if [[ -z "$DIGEST" || -z "$SIZE" || -z "$MEDIA_TYPE" ]]; then
+                echo "::error::Incomplete push output for ${INGOT_FILE}"
                 PUSH_FAILED=true
                 break
               fi
               echo "  Pushed: digest=${DIGEST}"
 
-              # Build asset entry for package-manifest (including digest)
+              # Build asset entry for package-manifest. size, media_type and
+              # artifact_type also describe this manifest in the OCI Index below.
               ASSET_ENTRY=$(jq -n \
                 --arg ingot_file "$INGOT_FILE" \
                 --arg platform "$PLATFORM" \
                 --arg arch "$ARCH" \
                 --arg digest "$DIGEST" \
-                '{ingot_file: $ingot_file, platform: $platform, arch: $arch, digest: $digest}')
+                --argjson size "$SIZE" \
+                --arg media_type "$MEDIA_TYPE" \
+                --arg artifact_type "$ARTIFACT_TYPE" \
+                '{ingot_file: $ingot_file, platform: $platform, arch: $arch, digest: $digest,
+                  size: $size, media_type: $media_type, artifact_type: $artifact_type}')
               ASSETS_JSON=$(echo "$ASSETS_JSON" | jq --argjson entry "$ASSET_ENTRY" '. + [$entry]')
             done
 
@@ -891,23 +898,62 @@ jobs:
             fi
 
             # --- Create OCI Index for multi-architecture ---
-            # The index allows OCI-native tools to resolve platform-specific
-            # manifests from a single version tag. This is best-effort; the
-            # per-platform tags remain usable even if index creation fails.
+            # The index lets OCI-native tools resolve a platform-specific
+            # manifest from the bare version tag, and it is what
+            # generate-index.sh reads when no build artifacts are at hand.
+            #
+            # The index is assembled here rather than with `oras manifest index
+            # create`: that command arrived in oras 1.3.0, and it fills in
+            # platform from an image config, which ingots do not carry.
             echo "  Creating OCI Index: ${REPO_REF}:${OCI_TAG}"
 
-            INDEX_SOURCES=()
-            for meta_file in "${META_LIST[@]}"; do
-              read -r p a < <(jq -r '[.platform, .arch] | @tsv' "$meta_file")
-              INDEX_SOURCES+=("${REPO_REF}:${OCI_TAG}-${p}-${a}")
-            done
+            INDEX_FILE=$(mktemp)
+            jq -n --argjson assets "$ASSETS_JSON" '{
+              schemaVersion: 2,
+              mediaType: "application/vnd.oci.image.index.v1+json",
+              manifests: [
+                $assets[] | {
+                  mediaType: .media_type,
+                  digest: .digest,
+                  size: .size,
+                  platform: {
+                    os: .platform,
+                    architecture: (
+                      {"x86_64": "amd64", "aarch64": "arm64"}[.arch] // .arch
+                    )
+                  }
+                }
+                + (if .artifact_type != "" then {artifactType: .artifact_type} else {} end)
+              ]
+            }' > "$INDEX_FILE"
 
-            if ! oras manifest index create "${REPO_REF}:${OCI_TAG}" \
-              "${INDEX_SOURCES[@]}" 2>&1; then
-              echo "::warning::Failed to create OCI Index for ${key}; per-platform tags are still available"
-            else
-              echo "  OCI Index created"
+            # Read the tag back: an exit status of 0 is not evidence that the
+            # index exists.
+            INDEX_PUSHED=false
+            if oras manifest push "${REPO_REF}:${OCI_TAG}" "$INDEX_FILE" \
+              --media-type "application/vnd.oci.image.index.v1+json"; then
+              # Retry once: the registry may not serve the tag right away.
+              for attempt in 1 2; do
+                if oras manifest fetch "${REPO_REF}:${OCI_TAG}" \
+                  | jq -e '.mediaType == "application/vnd.oci.image.index.v1+json"
+                           and (.manifests | length) > 0' >/dev/null; then
+                  INDEX_PUSHED=true
+                  break
+                fi
+                if [[ "$attempt" -lt 2 ]]; then
+                  echo "  Index not retrievable yet (attempt ${attempt}), retrying..."
+                  sleep 3
+                fi
+              done
             fi
+            rm -f "$INDEX_FILE"
+
+            if [[ "$INDEX_PUSHED" != "true" ]]; then
+              echo "::error::OCI Index for ${key} is not retrievable at ${REPO_REF}:${OCI_TAG}"
+              FAILURE_COUNT=$((FAILURE_COUNT + 1))
+              continue
+            fi
+            echo "  OCI Index created"
 
             # --- Generate package-manifest JSON ---
             CREATED_AT=$(date -u +"%Y-%m-%dT%H:%M:%SZ")

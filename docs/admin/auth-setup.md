@@ -188,10 +188,15 @@ jobs:
             --artifact-type "application/vnd.skipbit.scrap.ingot.v1+tar.xz" \
             "${INGOT_PATH}:application/x-tar+xz"
 
-          # ... then an OCI index over them under the bare version tag.
-          oras manifest index create "${REPO_REF}:${VERSION}" \
-            "${REPO_REF}:${VERSION}-linux-x86_64" \
-            "${REPO_REF}:${VERSION}-linux-aarch64"
+          # ... then an OCI index over them under the bare version tag. The
+          # index is assembled from the push output, so that every descriptor
+          # carries the platform its ingot was built for.
+          oras manifest push "${REPO_REF}:${VERSION}" index.json \
+            --media-type "application/vnd.oci.image.index.v1+json"
+
+          # Read the tag back. An exit status of 0 is not evidence that the
+          # index exists, and index.toml must not name a tag that does not.
+          oras manifest fetch "${REPO_REF}:${VERSION}" > /dev/null
 ```
 
 The artifact type is what identifies a blob as a scrap ingot; `index.toml` records the
