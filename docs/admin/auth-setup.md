@@ -179,9 +179,18 @@ jobs:
         env:
           REGISTRY: ghcr.io/${{ github.repository }}
         run: |
-          # FAMILY, VERSION, PLATFORM, ARCH and INGOT_PATH come from the mold
-          # and from the ingot metadata written by the build jobs.
+          # FAMILY, VERSION, PLATFORM, ARCH, GLIBC_VERSION and INGOT_PATH come
+          # from the mold and from the ingot metadata written by the build jobs.
           REPO_REF="${REGISTRY}/${FAMILY}"
+
+          # OCI spells the architectures differently, and the descriptors
+          # accumulate across the platforms of one mold.
+          case "$ARCH" in
+            x86_64)  OCI_ARCH=amd64 ;;
+            aarch64) OCI_ARCH=arm64 ;;
+            *)       OCI_ARCH="$ARCH" ;;
+          esac
+          DESCRIPTORS='[]'
 
           # One artifact per platform, tagged with the platform. The JSON output
           # carries the digest and size that describe it in the index.
@@ -189,10 +198,9 @@ jobs:
             --artifact-type "application/vnd.skipbit.scrap.ingot.v1+tar.xz" \
             "${INGOT_PATH}:application/x-tar+xz" --format json)
 
-          # Each push contributes one descriptor. OCI_ARCH is the OCI spelling
-          # of ARCH (x86_64 -> amd64, aarch64 -> arm64), and the glibc version
-          # rides along as an annotation, because the index is all that
-          # generate-index.sh has when no build artifacts are at hand.
+          # Each push contributes one descriptor. The glibc version rides along
+          # as an annotation, because the index is all that generate-index.sh
+          # has when no build artifacts are at hand.
           DESCRIPTOR=$(jq -n --argjson push "$PUSH_OUTPUT" \
             --arg os "$PLATFORM" --arg arch "$OCI_ARCH" --arg glibc "$GLIBC_VERSION" \
             '{mediaType: $push.mediaType, digest: $push.digest, size: $push.size,
@@ -212,9 +220,12 @@ jobs:
           # Read the tag back. An exit status of 0 is not evidence that the
           # index is there, and index.toml must not name a tag that is not.
           # A bare fetch is not enough either: it succeeds for a single
-          # manifest, which is not an index at all.
+          # manifest, and for an index left behind by another run. Compare the
+          # children with the ones just pushed.
           oras manifest fetch "${REPO_REF}:${VERSION}" \
-            | jq -e '.mediaType == "application/vnd.oci.image.index.v1+json"' > /dev/null
+            | jq -e --argjson expected "$(jq -c '[.[].digest] | sort' <<< "$DESCRIPTORS")" \
+              '.mediaType == "application/vnd.oci.image.index.v1+json"
+               and ([.manifests[].digest] | sort) == $expected' > /dev/null
 ```
 
 The artifact type is what identifies a blob as a scrap ingot; `index.toml` records the

@@ -793,10 +793,16 @@ jobs:
             INDEX_DESCRIPTORS="[]"
 
             for meta_file in "${META_LIST[@]}"; do
-              # Read all fields in a single jq call
-              read -r PLATFORM ARCH INGOT_FILE GLIBC_VERSION < <(
-                jq -r '[.platform, .arch, .ingot_file, (.glibc_version // "")] | @tsv' "$meta_file"
+              # One value per line. Tab counts as whitespace to IFS, so a
+              # tab-separated read would let an empty field shift into its
+              # neighbour.
+              mapfile -t META_FIELDS < <(
+                jq -r '.platform, .arch, .ingot_file, (.glibc_version // "")' "$meta_file"
               )
+              PLATFORM="${META_FIELDS[0]:-}"
+              ARCH="${META_FIELDS[1]:-}"
+              INGOT_FILE="${META_FIELDS[2]:-}"
+              GLIBC_VERSION="${META_FIELDS[3]:-}"
 
               PLATFORM_TAG="${OCI_TAG}-${PLATFORM}-${ARCH}"
 
@@ -826,8 +832,7 @@ jobs:
               # Push with retry (max 2 attempts).
               # Capture stdout (JSON) separately from stderr (progress/errors).
               PUSH_OUTPUT=""
-              PUSH_EXIT=1
-              PUSH_STDERR=""
+              PUSH_OK=false
               for attempt in 1 2; do
                 PUSH_STDERR=$(mktemp)
                 if PUSH_OUTPUT=$(oras push "${REPO_REF}:${PLATFORM_TAG}" \
@@ -835,19 +840,20 @@ jobs:
                   "${ANNOTATIONS[@]}" \
                   "${INGOT_PATH}:application/x-tar+xz" \
                   --format json 2>"$PUSH_STDERR"); then
-                  PUSH_EXIT=0
+                  PUSH_OK=true
                   rm -f "$PUSH_STDERR"
                   break
                 fi
-                PUSH_EXIT=$?
+                # oras names the cause here; the annotation below cannot.
+                cat "$PUSH_STDERR"
+                rm -f "$PUSH_STDERR"
                 if [[ "$attempt" -lt 2 ]]; then
                   echo "  Push failed (attempt ${attempt}), retrying..."
                   sleep 3
                 fi
-                rm -f "$PUSH_STDERR"
               done
 
-              if [[ "$PUSH_EXIT" -ne 0 ]]; then
+              if [[ "$PUSH_OK" != "true" ]]; then
                 echo "::error::Failed to push ${INGOT_FILE}"
                 PUSH_FAILED=true
                 break
@@ -860,18 +866,20 @@ jobs:
               # glibc_version rides along as an annotation: generate-index.sh
               # reads the index when no build artifacts are at hand, and would
               # otherwise lose it.
-              DESCRIPTOR=$(jq -e \
+              DESCRIPTOR=$(jq -ecs \
                 --arg os "$PLATFORM" \
                 --arg arch "$ARCH" \
                 --arg glibc "$GLIBC_VERSION" \
-                'select((.digest | strings | length) > 0)
+                'select(length == 1)
+                 | .[0]
+                 | select((.digest | strings | length) > 0)
                  | select((.mediaType | strings | length) > 0)
                  | select((.size | numbers) != null)
                  | {mediaType, digest, size,
                     platform: {os: $os,
                                architecture: ({"x86_64": "amd64", "aarch64": "arm64"}[$arch] // $arch)}}
-                 + (if (.artifactType // "") != "" then {artifactType: .artifactType} else {} end)
-                 + (if $glibc != "" then {annotations: {"org.skipbit.scrap.glibc_version": $glibc}} else {} end)' \
+                   + (if (.artifactType // "") != "" then {artifactType: .artifactType} else {} end)
+                   + (if $glibc != "" then {annotations: {"org.skipbit.scrap.glibc_version": $glibc}} else {} end)' \
                 <<< "$PUSH_OUTPUT" 2>/dev/null) || DESCRIPTOR=""
               if [[ -z "$DESCRIPTOR" ]]; then
                 echo "::error::Incomplete push output for ${INGOT_FILE}"
@@ -958,7 +966,7 @@ jobs:
             # so that an index left by another run does not pass for this one.
             EXPECTED_DIGESTS=$(jq -c '[.[].digest] | sort' <<< "$INDEX_DESCRIPTORS")
             INDEX_VERIFIED=false
-            for attempt in 1 2; do
+            for attempt in 1 2 3; do
               if oras manifest fetch "${REPO_REF}:${OCI_TAG}" \
                 | jq -e --argjson expected "$EXPECTED_DIGESTS" \
                   '.mediaType == "application/vnd.oci.image.index.v1+json"
@@ -966,9 +974,11 @@ jobs:
                 INDEX_VERIFIED=true
                 break
               fi
-              if [[ "$attempt" -lt 2 ]]; then
+              # The tag is published by now, so failing here costs the mold a
+              # revision. Back off rather than give up on the second try.
+              if [[ "$attempt" -lt 3 ]]; then
                 echo "  Index not retrievable yet (attempt ${attempt}), retrying..."
-                sleep 3
+                sleep $(( attempt * 3 ))
               fi
             done
 

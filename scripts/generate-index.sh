@@ -207,12 +207,12 @@ resolve_oci_tag() {
             # Find the latest revision tag matching this version
             local version_re
             version_re=$(printf '%s' "$version" | sed 's/[.]/\\./g')
-            # Find the latest revision tag using numeric sort (lexicographic
-            # sort would rank -r9 after -r10, producing incorrect results).
+            # Version sort: -r9 must rank below -r10, and the bare version
+            # below both.
             local latest_tag
             latest_tag=$(jq -r --arg re "^${version_re}(-r[0-9]+)?$" \
                 '[.tags[]? | select(test($re))][]' <<< "$tags_json" \
-                | sort -t'-' -k2 -n | tail -1)
+                | sort -V | tail -1)
             if [[ -n "$latest_tag" ]]; then
                 echo "${family}:${latest_tag}"
                 return 0
@@ -299,36 +299,34 @@ collect_build_ingots() {
             manifest_count=$(jq '.manifests | length' <<< "$index_manifest" 2>/dev/null) || manifest_count=0
 
             for ((i = 0; i < manifest_count; i++)); do
-                # glibc_version travels as an annotation on the descriptor,
-                # since the index is the only source here.
-                local digest platform arch glibc_version
-                IFS=$'\t' read -r digest platform arch glibc_version < <(
-                    jq -r --argjson i "$i" \
-                        '[.manifests[$i].digest,
-                          (.manifests[$i].platform.os // ""),
-                          (.manifests[$i].platform.architecture // ""),
-                          (.manifests[$i].annotations["org.skipbit.scrap.glibc_version"] // "")] | @tsv' \
-                        <<< "$index_manifest"
-                )
-
-                [[ -z "$digest" || -z "$platform" ]] && continue
-
-                # Map OCI arch names back to scrap naming convention
-                case "$arch" in
-                    amd64) arch="x86_64" ;;
-                    arm64) arch="aarch64" ;;
-                esac
-
+                # Build the entry in jq. Reading the fields into shell
+                # variables would let an absent one shift into its neighbour,
+                # and arch names have to be mapped back to scrap's spelling.
+                # glibc_version travels as an annotation, since the index is
+                # the only source here.
                 local entry
-                entry=$(jq -n \
+                entry=$(jq -ecs --argjson i "$i" \
                     --arg registry "$registry" \
                     --arg tag "$oci_tag" \
-                    --arg digest "$digest" \
-                    --arg platform "$platform" \
-                    --arg arch "$arch" \
-                    --arg glibc "$glibc_version" \
-                    '{registry: $registry, tag: $tag, digest: $digest, platform: $platform, arch: $arch}
-                    + if $glibc != "" then {glibc_version: $glibc} else {} end')
+                    'select(length == 1)
+                     | .[0].manifests[$i]
+                     | select((.digest | strings | length) > 0)
+                     | select((.platform.os | strings | length) > 0)
+                     | select((.platform.architecture | strings | length) > 0)
+                     | {registry: $registry,
+                        tag: $tag,
+                        digest: .digest,
+                        platform: .platform.os,
+                        arch: ({"amd64": "x86_64", "arm64": "aarch64"}[.platform.architecture]
+                               // .platform.architecture)}
+                       + (if (.annotations["org.skipbit.scrap.glibc_version"] // "") != ""
+                          then {glibc_version: .annotations["org.skipbit.scrap.glibc_version"]}
+                          else {} end)' <<< "$index_manifest" 2>/dev/null) || entry=""
+
+                if [[ -z "$entry" ]]; then
+                    warn "Descriptor ${i} of ${family}:${tag_version} has no digest or platform; skipping"
+                    continue
+                fi
 
                 ingots=$(jq --argjson entry "$entry" '. + [$entry]' <<< "$ingots")
             done
