@@ -179,19 +179,53 @@ jobs:
         env:
           REGISTRY: ghcr.io/${{ github.repository }}
         run: |
-          # FAMILY, VERSION, PLATFORM, ARCH and INGOT_PATH come from the mold
-          # and from the ingot metadata written by the build jobs.
+          # FAMILY, VERSION, PLATFORM, ARCH, GLIBC_VERSION and INGOT_PATH come
+          # from the mold and from the ingot metadata written by the build jobs.
           REPO_REF="${REGISTRY}/${FAMILY}"
 
-          # One artifact per platform, tagged with the platform ...
-          oras push "${REPO_REF}:${VERSION}-${PLATFORM}-${ARCH}" \
+          # OCI spells the architectures differently, and the descriptors
+          # accumulate across the platforms of one mold.
+          case "$ARCH" in
+            x86_64)  OCI_ARCH=amd64 ;;
+            aarch64) OCI_ARCH=arm64 ;;
+            *)       OCI_ARCH="$ARCH" ;;
+          esac
+          DESCRIPTORS='[]'
+
+          # One artifact per platform, tagged with the platform. The JSON output
+          # carries the digest and size that describe it in the index.
+          PUSH_OUTPUT=$(oras push "${REPO_REF}:${VERSION}-${PLATFORM}-${ARCH}" \
             --artifact-type "application/vnd.skipbit.scrap.ingot.v1+tar.xz" \
-            "${INGOT_PATH}:application/x-tar+xz"
+            "${INGOT_PATH}:application/x-tar+xz" --format json)
+
+          # Each push contributes one descriptor. The glibc version rides along
+          # as an annotation, because the index is all that generate-index.sh
+          # has when no build artifacts are at hand.
+          DESCRIPTOR=$(jq -n --argjson push "$PUSH_OUTPUT" \
+            --arg os "$PLATFORM" --arg arch "$OCI_ARCH" --arg glibc "$GLIBC_VERSION" \
+            '{mediaType: $push.mediaType, digest: $push.digest, size: $push.size,
+              artifactType: $push.artifactType,
+              platform: {os: $os, architecture: $arch},
+              annotations: {"org.skipbit.scrap.glibc_version": $glibc}}')
+          DESCRIPTORS=$(jq --argjson d "$DESCRIPTOR" '. + [$d]' <<< "$DESCRIPTORS")
 
           # ... then an OCI index over them under the bare version tag.
-          oras manifest index create "${REPO_REF}:${VERSION}" \
-            "${REPO_REF}:${VERSION}-linux-x86_64" \
-            "${REPO_REF}:${VERSION}-linux-aarch64"
+          jq -n --argjson manifests "$DESCRIPTORS" \
+            '{schemaVersion: 2,
+              mediaType: "application/vnd.oci.image.index.v1+json",
+              manifests: $manifests}' > index.json
+          oras manifest push "${REPO_REF}:${VERSION}" index.json \
+            --media-type "application/vnd.oci.image.index.v1+json"
+
+          # Read the tag back. An exit status of 0 is not evidence that the
+          # index is there, and index.toml must not name a tag that is not.
+          # A bare fetch is not enough either: it succeeds for a single
+          # manifest, and for an index left behind by another run. Compare the
+          # children with the ones just pushed.
+          oras manifest fetch "${REPO_REF}:${VERSION}" \
+            | jq -e --argjson expected "$(jq -c '[.[].digest] | sort' <<< "$DESCRIPTORS")" \
+              '.mediaType == "application/vnd.oci.image.index.v1+json"
+               and ([.manifests[].digest] | sort) == $expected' > /dev/null
 ```
 
 The artifact type is what identifies a blob as a scrap ingot; `index.toml` records the
