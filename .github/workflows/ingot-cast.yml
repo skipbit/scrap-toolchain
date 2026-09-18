@@ -3,6 +3,9 @@ name: Ingot Cast
 on:
   push:
     branches: [main]
+    # Wider than the rebuild condition in detect-build-targets on purpose:
+    # this run's completion is what starts Index Update, so a change to
+    # generate-index.sh still refreshes index.toml without building.
     paths:
       - 'molds/**'
       - 'scripts/**'
@@ -87,13 +90,16 @@ jobs:
             fi
 
             # Check for infrastructure changes that affect all molds.
-            # When build scripts, schema, or platform definitions change,
-            # all existing build-type molds must be rebuilt to ensure
-            # published ingots reflect the latest infrastructure.
-            # Workflow files (.github/workflows/) are excluded — they
-            # affect how builds run, not what is built. Same rationale
-            # as pr-validation.yml.
-            INFRA_CHANGED=$(echo "$ALL_CHANGED_FILES" | grep -E '^(schema/|scripts/|platforms\.toml$)' || true)
+            # Only the files that decide an ingot's content qualify:
+            # cast-ingot.sh is the build, and platforms.toml picks the
+            # container that sets the glibc baseline. The rest affect how
+            # builds run, not what is built — smoke-test.sh verifies the
+            # ingot after it is packed, validate-mold.sh and schema/ belong
+            # to pr-validation.yml, and generate-index.sh runs afterwards in
+            # index-update.yml. Rebuilding for those would republish a
+            # version from a different build for no gain; use
+            # workflow_dispatch to rebuild a mold on purpose.
+            INFRA_CHANGED=$(echo "$ALL_CHANGED_FILES" | grep -E '^(platforms\.toml|scripts/cast-ingot\.sh)$' || true)
 
             # Extract mold-specific changes
             MOLD_CHANGED_FILES=$(echo "$ALL_CHANGED_FILES" | grep '^molds/' || true)
