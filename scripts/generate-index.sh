@@ -178,60 +178,14 @@ print('generator = \"scripts/generate-index.sh\"')
 " > "$INDEX_FILE"
 }
 
-# --- Resolve OCI tag for a build-type mold ---
-# Finds the OCI tag for a family-version pair.
-# Checks ARTIFACT_DIR first, then falls back to OCI Registry API tag listing.
-# Args: $1 = family, $2 = version
-# Output: OCI tag on stdout (e.g., "gcc:14.2.0" or "gcc:14.2.0-r2")
-resolve_oci_tag() {
-    local family="$1" version="$2"
-
-    # Priority 1: package-manifest in ARTIFACT_DIR
-    if [[ -n "$ARTIFACT_DIR" ]]; then
-        local manifest="${ARTIFACT_DIR}/package-manifest-${family}-${version}.json"
-        if [[ -f "$manifest" ]]; then
-            local tag
-            tag=$(jq -r '.oci_tag // empty' "$manifest" 2>/dev/null)
-            if [[ -n "$tag" ]]; then
-                echo "$tag"
-                return 0
-            fi
-        fi
-    fi
-
-    # Fallback: OCI Registry API tag listing
-    if [[ "$OCI_API_AVAILABLE" == "true" ]]; then
-        local repo_path="${GITHUB_REPOSITORY}/${family}"
-        local tags_json
-        if tags_json=$(oci_api_call "$repo_path" "tags/list" "application/json"); then
-            # Find the latest revision tag matching this version
-            local version_re
-            version_re=$(printf '%s' "$version" | sed 's/[.]/\\./g')
-            # Version sort: -r9 must rank below -r10, and the bare version
-            # below both.
-            local latest_tag
-            latest_tag=$(jq -r --arg re "^${version_re}(-r[0-9]+)?$" \
-                '[.tags[]? | select(test($re))][]' <<< "$tags_json" \
-                | sort -V | tail -1)
-            if [[ -n "$latest_tag" ]]; then
-                echo "${family}:${latest_tag}"
-                return 0
-            fi
-        fi
-    fi
-
-    # No existing tag found; use default (initial version)
-    echo "${family}:${version}"
-    return 0
-}
-
 # --- Collect build-type ingots from package-manifest + ingot-metadata ---
 # Produces OCI reference entries (registry, tag, digest) for build-type molds.
 # Checks ARTIFACT_DIR first, then falls back to OCI Registry API.
-# Args: $1 = family, $2 = version, $3 = oci_tag (e.g., "gcc:14.2.0")
+# Args: $1 = family, $2 = version
 # Output: JSON array of ingot objects on stdout
 collect_build_ingots() {
-    local family="$1" version="$2" oci_tag="$3"
+    local family="$1" version="$2"
+    local oci_tag="${family}:${version}"
     local ingots="[]"
     local registry="ghcr.io/${GITHUB_REPOSITORY}"
 
@@ -284,16 +238,14 @@ collect_build_ingots() {
     ingot_count_fb=$(jq 'length' <<< "$ingots" 2>/dev/null) || ingot_count_fb=0
     if [[ "$ingot_count_fb" -eq 0 && "$OCI_API_AVAILABLE" == "true" ]]; then
         local repo_path="${GITHUB_REPOSITORY}/${family}"
-        # Extract just the version portion from oci_tag (e.g., "gcc:14.2.0" -> "14.2.0")
-        local tag_version="${oci_tag#*:}"
 
         # Get the OCI Index manifest for this tag
         local index_manifest
-        if index_manifest=$(oci_api_call "$repo_path" "manifests/${tag_version}"); then
+        if index_manifest=$(oci_api_call "$repo_path" "manifests/${version}"); then
             # Verify this is an OCI Index (has .manifests array), not a single manifest.
             # A single-platform manifest has .config + .layers but no .manifests.
             if ! jq -e 'has("manifests")' <<< "$index_manifest" >/dev/null 2>&1; then
-                warn "OCI manifest for ${family}:${tag_version} is not an Index; cannot extract per-platform digests"
+                warn "OCI manifest for ${family}:${version} is not an Index; cannot extract per-platform digests"
             else
             local manifest_count
             manifest_count=$(jq '.manifests | length' <<< "$index_manifest" 2>/dev/null) || manifest_count=0
@@ -324,7 +276,7 @@ collect_build_ingots() {
                           else {} end)' <<< "$index_manifest" 2>/dev/null) || entry=""
 
                 if [[ -z "$entry" ]]; then
-                    warn "Descriptor ${i} of ${family}:${tag_version} has no digest or platform; skipping"
+                    warn "Descriptor ${i} of ${family}:${version} has no digest or platform; skipping"
                     continue
                 fi
 
@@ -469,10 +421,8 @@ json.dump(data, sys.stdout)
         origin="upstream"
         info "Fetch type: reading upstream URLs from mold.toml"
     elif [[ "$source_type" == "build" ]]; then
-        # Build type: resolve OCI tag and collect OCI references
-        oci_tag=$(resolve_oci_tag "$family" "$version")
-        info "OCI tag: ${oci_tag}"
-        ingots=$(collect_build_ingots "$family" "$version" "$oci_tag")
+        # Build type: collect OCI references
+        ingots=$(collect_build_ingots "$family" "$version")
         origin="scrap-release"
 
         # Build type: preserve existing entries on API failure
