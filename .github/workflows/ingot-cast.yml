@@ -3,6 +3,9 @@ name: Ingot Cast
 on:
   push:
     branches: [main]
+    # Wider than the rebuild condition in detect-build-targets on purpose:
+    # this run's completion is what starts Index Update, so a change to
+    # generate-index.sh still refreshes index.toml without building.
     paths:
       - 'molds/**'
       - 'scripts/**'
@@ -87,13 +90,16 @@ jobs:
             fi
 
             # Check for infrastructure changes that affect all molds.
-            # When build scripts, schema, or platform definitions change,
-            # all existing build-type molds must be rebuilt to ensure
-            # published ingots reflect the latest infrastructure.
-            # Workflow files (.github/workflows/) are excluded — they
-            # affect how builds run, not what is built. Same rationale
-            # as pr-validation.yml.
-            INFRA_CHANGED=$(echo "$ALL_CHANGED_FILES" | grep -E '^(schema/|scripts/|platforms\.toml$)' || true)
+            # Only the files that decide an ingot's content qualify:
+            # cast-ingot.sh is the build, and platforms.toml picks the
+            # container that sets the glibc baseline. The rest affect how
+            # builds run, not what is built — smoke-test.sh verifies the
+            # ingot after it is packed, validate-mold.sh and schema/ belong
+            # to pr-validation.yml, and generate-index.sh runs afterwards in
+            # index-update.yml. Rebuilding for those would republish a
+            # version from a different build for no gain; use
+            # workflow_dispatch to rebuild a mold on purpose.
+            INFRA_CHANGED=$(echo "$ALL_CHANGED_FILES" | grep -E '^(platforms\.toml|scripts/cast-ingot\.sh)$' || true)
 
             # Extract mold-specific changes
             MOLD_CHANGED_FILES=$(echo "$ALL_CHANGED_FILES" | grep '^molds/' || true)
@@ -751,41 +757,14 @@ jobs:
               continue
             fi
 
-            # --- Determine OCI revision tag ---
+            # --- OCI tag ---
+            # A toolchain is identified by family, version, platform and
+            # architecture, so rebuilding a version moves its tags onto the
+            # new manifests. The old ones stay in the registry, reachable by
+            # digest, and the index stops naming them.
             REPO_REF="${REGISTRY}/${FAMILY}"
 
-            # List existing tags. A 404 (repository not yet created) is treated
-            # as an empty list — this is the expected state for first-time push.
-            if ! EXISTING_TAGS=$(oras repo tags "$REPO_REF" 2>/dev/null); then
-              EXISTING_TAGS=""
-            fi
-
-            # Find the latest revision for this version.
-            # Revision scheme: initial build uses bare version (e.g., 14.2.0),
-            # which is implicitly revision 1. First rebuild is -r2, then -r3, etc.
-            # Escape dots in VERSION for regex (14.2.0 -> 14\.2\.0)
-            VERSION_RE="${VERSION//./\\.}"
-
-            OCI_TAG="${VERSION}"
-            if grep -qE "^${VERSION_RE}(-r[0-9]+)?$" <<< "$EXISTING_TAGS"; then
-              LATEST_REV=0
-              while IFS= read -r tag; do
-                rev="${tag#"$VERSION"}"
-                rev="${rev#-r}"
-                [[ -z "$rev" ]] && rev=0
-                (( rev > LATEST_REV )) && LATEST_REV=$rev
-              done < <(grep -oE "^${VERSION_RE}(-r[0-9]+)?$" <<< "$EXISTING_TAGS")
-
-              if [[ "$LATEST_REV" -eq 0 ]]; then
-                # Base tag exists without revision suffix -> implicit r1 -> next is r2
-                OCI_TAG="${VERSION}-r2"
-              else
-                NEXT_REV=$((LATEST_REV + 1))
-                OCI_TAG="${VERSION}-r${NEXT_REV}"
-              fi
-            fi
-
-            echo "OCI tag: ${FAMILY}:${OCI_TAG}"
+            echo "OCI tag: ${FAMILY}:${VERSION}"
 
             # --- Push each platform's ingot ---
             PUSH_FAILED=false
@@ -804,7 +783,7 @@ jobs:
               INGOT_FILE="${META_FIELDS[2]:-}"
               GLIBC_VERSION="${META_FIELDS[3]:-}"
 
-              PLATFORM_TAG="${OCI_TAG}-${PLATFORM}-${ARCH}"
+              PLATFORM_TAG="${VERSION}-${PLATFORM}-${ARCH}"
 
               # Find the ingot file in artifacts
               INGOT_PATH=$(find artifacts/ -name "$INGOT_FILE" -type f | head -1)
@@ -933,7 +912,7 @@ jobs:
             # The index is assembled here rather than with `oras manifest index
             # create`: that command arrived in oras 1.3.0, and it fills in
             # platform from an image config, which ingots do not carry.
-            echo "  Creating OCI Index: ${REPO_REF}:${OCI_TAG}"
+            echo "  Creating OCI Index: ${REPO_REF}:${VERSION}"
 
             INDEX_FILE="${INDEX_DIR}/${FAMILY}-${VERSION}.json"
             jq -n --argjson manifests "$INDEX_DESCRIPTORS" '{
@@ -944,7 +923,7 @@ jobs:
 
             INDEX_PUSHED=false
             for attempt in 1 2; do
-              if oras manifest push "${REPO_REF}:${OCI_TAG}" "$INDEX_FILE" \
+              if oras manifest push "${REPO_REF}:${VERSION}" "$INDEX_FILE" \
                 --media-type "application/vnd.oci.image.index.v1+json"; then
                 INDEX_PUSHED=true
                 break
@@ -956,7 +935,7 @@ jobs:
             done
 
             if [[ "$INDEX_PUSHED" != "true" ]]; then
-              echo "::error::Failed to push the OCI Index for ${key} to ${REPO_REF}:${OCI_TAG}"
+              echo "::error::Failed to push the OCI Index for ${key} to ${REPO_REF}:${VERSION}"
               FAILURE_COUNT=$((FAILURE_COUNT + 1))
               continue
             fi
@@ -967,15 +946,16 @@ jobs:
             EXPECTED_DIGESTS=$(jq -c '[.[].digest] | sort' <<< "$INDEX_DESCRIPTORS")
             INDEX_VERIFIED=false
             for attempt in 1 2 3; do
-              if oras manifest fetch "${REPO_REF}:${OCI_TAG}" \
+              if oras manifest fetch "${REPO_REF}:${VERSION}" \
                 | jq -e --argjson expected "$EXPECTED_DIGESTS" \
                   '.mediaType == "application/vnd.oci.image.index.v1+json"
                    and ([.manifests[].digest] | sort) == $expected' >/dev/null; then
                 INDEX_VERIFIED=true
                 break
               fi
-              # The tag is published by now, so failing here costs the mold a
-              # revision. Back off rather than give up on the second try.
+              # The tag already points at this index, so failing here leaves
+              # the registry ahead of index.toml. Back off rather than give up
+              # on the second try.
               if [[ "$attempt" -lt 3 ]]; then
                 echo "  Index not retrievable yet (attempt ${attempt}), retrying..."
                 sleep $(( attempt * 3 ))
@@ -983,7 +963,7 @@ jobs:
             done
 
             if [[ "$INDEX_VERIFIED" != "true" ]]; then
-              echo "::error::OCI Index at ${REPO_REF}:${OCI_TAG} does not read back as pushed for ${key}"
+              echo "::error::OCI Index at ${REPO_REF}:${VERSION} does not read back as pushed for ${key}"
               FAILURE_COUNT=$((FAILURE_COUNT + 1))
               continue
             fi
@@ -994,7 +974,7 @@ jobs:
             jq -n \
               --arg family "$FAMILY" \
               --arg version "$VERSION" \
-              --arg oci_tag "${FAMILY}:${OCI_TAG}" \
+              --arg oci_tag "${FAMILY}:${VERSION}" \
               --argjson assets "$ASSETS_JSON" \
               --arg created_at "$CREATED_AT" \
               '{
