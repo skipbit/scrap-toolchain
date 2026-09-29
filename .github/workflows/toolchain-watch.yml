@@ -1,0 +1,235 @@
+name: Toolchain Watch
+
+# Opens one pull request per upstream release that has no mold yet. The
+# pull requests are reviewed and merged by hand; merging starts Ingot Cast
+# as for any other mold change.
+#
+# A pull request is opened once per release. Closing it without merging
+# keeps the release out: the workflow does not open it again.
+on:
+  schedule:
+    - cron: '17 3 * * 1'
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: 'List the new releases without opening pull requests'
+        type: boolean
+        default: false
+      only:
+        description: 'Limit to one release, e.g. llvm-22.1.1'
+        type: string
+        default: ''
+
+concurrency:
+  group: toolchain-watch
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  find-releases:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    outputs:
+      releases: ${{ steps.find.outputs.releases }}
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Set up Python
+        uses: actions/setup-python@v7
+        with:
+          python-version: '3.12'
+
+      - name: Find new releases
+        id: find
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ONLY: ${{ inputs.only }}
+        run: |
+          RELEASES=$(scripts/find-new-releases.sh)
+          if [[ -n "$ONLY" ]]; then
+            RELEASES=$(jq --arg id "$ONLY" 'map(select(.id == $id))' <<< "$RELEASES")
+          fi
+          echo "releases=$(jq -c . <<< "$RELEASES")" >> "$GITHUB_OUTPUT"
+
+          {
+            echo "## New releases"
+            echo
+            if [[ "$(jq length <<< "$RELEASES")" -eq 0 ]]; then
+              echo "None."
+            else
+              echo "| Release | Derived from | Missing files |"
+              echo "|---------|--------------|---------------|"
+              jq -r '.[] | "| \(.id) | \(.base) | \(.missing | join(", ")) |"' <<< "$RELEASES"
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  open-pull-request:
+    needs: find-releases
+    if: needs.find-releases.outputs.releases != '[]' && !inputs.dry_run
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        release: ${{ fromJSON(needs.find-releases.outputs.releases) }}
+    steps:
+      # The default token cannot be used: pull requests it opens do not
+      # start PR Validation.
+      - name: Generate token
+        id: app-token
+        uses: actions/create-github-app-token@v3
+        with:
+          app-id: ${{ secrets.APP_ID }}
+          private-key: ${{ secrets.APP_PRIVATE_KEY }}
+
+      - uses: actions/checkout@v7
+        with:
+          token: ${{ steps.app-token.outputs.token }}
+
+      - name: Set up Python
+        uses: actions/setup-python@v7
+        with:
+          python-version: '3.12'
+
+      - name: Check for an earlier pull request
+        id: earlier
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          BRANCH: toolchain/${{ matrix.release.id }}
+        run: |
+          COUNT=$(gh pr list -R "$GITHUB_REPOSITORY" --head "$BRANCH" --state all \
+            --json number --jq length)
+          if [[ "$COUNT" -gt 0 ]]; then
+            echo "A pull request from ${BRANCH} already exists; nothing to do."
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "skip=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Write the mold
+        if: steps.earlier.outputs.skip == 'false'
+        id: mold
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          BASE: ${{ matrix.release.base }}
+          VERSION: ${{ matrix.release.version }}
+          MISSING: ${{ join(matrix.release.missing, ' ') }}
+        run: |
+          # shellcheck disable=SC2086  # MISSING is a list of file names
+          MOLD_DIR=$(scripts/write-mold.sh "$BASE" "$VERSION" $MISSING)
+          echo "dir=${MOLD_DIR}" >> "$GITHUB_OUTPUT"
+
+      # The value is carried over from the base mold, and a change upstream
+      # would not fail PR Validation, so the pull request shows what the
+      # release actually requires.
+      - name: Measure the glibc requirement
+        if: steps.earlier.outputs.skip == 'false' && matrix.release.family == 'llvm'
+        env:
+          MOLD_DIR: ${{ steps.mold.outputs.dir }}
+        run: |
+          # glibc.txt: "glibc_min=<carried over>", then "<arch>=<measured>"
+          python3 - > linux-binaries.txt <<'EOF'
+          import os, tomllib
+          with open(os.path.join(os.environ['MOLD_DIR'], 'mold.toml'), 'rb') as f:
+              source = tomllib.load(f)['source']
+          print('glibc_min', source.get('glibc_min', ''))
+          for b in source['binaries']:
+              if b['platform'] == 'linux':
+                  print(b['arch'], b['url'])
+          EOF
+
+          while read -r key value; do
+            if [[ "$key" == "glibc_min" ]]; then
+              echo "glibc_min=${value}"
+            else
+              echo "${key}=$(scripts/measure-glibc.sh "$value")"
+            fi
+          done < linux-binaries.txt > glibc.txt
+          cat glibc.txt
+
+      - name: Open the pull request
+        if: steps.earlier.outputs.skip == 'false'
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          APP_SLUG: ${{ steps.app-token.outputs.app-slug }}
+          BRANCH: toolchain/${{ matrix.release.id }}
+          FAMILY: ${{ matrix.release.family }}
+          VERSION: ${{ matrix.release.version }}
+          BASE: ${{ matrix.release.base }}
+          MOLD_DIR: ${{ steps.mold.outputs.dir }}
+          MISSING: ${{ join(matrix.release.missing, ', ') }}
+        run: |
+          TITLE="feat: add ${FAMILY^^} ${VERSION} mold definition"
+
+          {
+            echo "Adds the mold for ${FAMILY^^} ${VERSION}, copied from \`${BASE}\`"
+            echo "with the version, download URLs and checksums changed."
+            echo "Everything else is carried over and needs review."
+            echo
+            if [[ -n "$MISSING" ]]; then
+              echo "**Upstream has not published ${MISSING}.** The release is"
+              echo "older than a week, so the platforms with files are added"
+              echo "and the rest are left out."
+              echo
+            fi
+            if [[ -f glibc.txt ]]; then
+              GLIBC_MIN=$(sed -n 's/^glibc_min=//p' glibc.txt)
+              echo "\`glibc_min\` is carried over as ${GLIBC_MIN}. clang and lld"
+              echo "in this release require:"
+              echo
+              sed -n '/^glibc_min=/!s/^\(.*\)=\(.*\)$/- \1: \2/p' glibc.txt
+              echo
+              if sed -n '/^glibc_min=/!s/^.*=//p' glibc.txt | grep -qvxF "$GLIBC_MIN"; then
+                echo "**This differs from \`glibc_min\`.** Decide which value"
+                echo "to keep before merging."
+                echo
+              fi
+            fi
+            if [[ "$FAMILY" == "gcc" ]]; then
+              echo "PR Validation only configures GCC. The full build and the"
+              echo "smoke test run after merging; if they fail, fix the mold in"
+              echo "a follow-up pull request."
+              echo
+            fi
+            echo "Opened by the Toolchain Watch workflow and never merged"
+            echo "automatically. Closing it without merging keeps this release"
+            echo "out; the workflow will not open it again."
+          } > pr-body.md
+
+          BOT_ID=$(gh api "/users/${APP_SLUG}%5Bbot%5D" --jq .id)
+          git config user.name "${APP_SLUG}[bot]"
+          git config user.email "${BOT_ID}+${APP_SLUG}[bot]@users.noreply.github.com"
+
+          git switch -c "$BRANCH"
+          git add "${MOLD_DIR}/mold.toml"
+          git commit -m "$TITLE"
+          # A branch left by a run that failed before opening the pull
+          # request is replaced.
+          git push --force origin "$BRANCH"
+          gh pr create -R "$GITHUB_REPOSITORY" --base main --head "$BRANCH" \
+            --title "$TITLE" --body-file pr-body.md
+
+  report-failure:
+    needs: [find-releases, open-pull-request]
+    if: failure()
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      issues: write
+    steps:
+      - name: Open or update the failure issue
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          TITLE="Toolchain Watch failed"
+          NUMBER=$(gh issue list -R "$GITHUB_REPOSITORY" --state open --search "in:title \"${TITLE}\"" \
+            --json number,title | jq -r --arg t "$TITLE" 'map(select(.title == $t)) | .[0].number // empty')
+          if [[ -n "$NUMBER" ]]; then
+            gh issue comment "$NUMBER" -R "$GITHUB_REPOSITORY" --body "Failed again: ${RUN_URL}"
+          else
+            gh issue create -R "$GITHUB_REPOSITORY" --title "$TITLE" \
+              --body "The check for new toolchain releases failed: ${RUN_URL}"
+          fi
