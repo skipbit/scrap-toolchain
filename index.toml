@@ -1,6 +1,6 @@
 [index]
 schema_version = 1
-generated_at = "2026-09-29T05:39:42Z"
+generated_at = "2026-09-29T10:16:06Z"
 generator = "scripts/generate-index.sh"
 
 [[toolchains]]
@@ -51,6 +51,31 @@ arch = "x86_64"
 registry = "ghcr.io/skipbit/scrap-toolchain"
 tag = "gcc:15.3.0"
 digest = "sha256:a1f314dee9489a3b752a9ea5b5176ad1166e24af9eabee65346ee2fe946cc781"
+glibc_version = "2.17"
+
+[[toolchains]]
+family = "gcc"
+version = "16.1.0"
+status = "active"
+license = "GPL-3.0-or-later WITH GCC-exception-3.1"
+source_type = "build"
+compiler = "g++"
+origin = "scrap-release"
+
+[[toolchains.ingots]]
+platform = "linux"
+arch = "aarch64"
+registry = "ghcr.io/skipbit/scrap-toolchain"
+tag = "gcc:16.1.0"
+digest = "sha256:9e53d86d2fc0c14d0973aafa827639f3afe451cdbb67ff2469e857e5fc34f22d"
+glibc_version = "2.29"
+
+[[toolchains.ingots]]
+platform = "linux"
+arch = "x86_64"
+registry = "ghcr.io/skipbit/scrap-toolchain"
+tag = "gcc:16.1.0"
+digest = "sha256:7827519db769f949fb9c2d3452842688956421d52d83d4325f4d35ed4d1cd2fd"
 glibc_version = "2.17"
 
 [[toolchains]]
