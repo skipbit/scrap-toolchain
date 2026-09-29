@@ -34,6 +34,14 @@ jobs:
     outputs:
       releases: ${{ steps.find.outputs.releases }}
     steps:
+      # The pull requests are built on the checked-out branch and target
+      # main, so a run from any other branch would carry its commits.
+      - name: Require main
+        if: github.ref != 'refs/heads/main'
+        run: |
+          echo "::error::Run this workflow from main, not ${GITHUB_REF}"
+          exit 1
+
       - uses: actions/checkout@v7
 
       - name: Set up Python
@@ -154,7 +162,8 @@ jobs:
             if [[ "$key" == "glibc_min" ]]; then
               echo "glibc_min=${value}"
             else
-              echo "${key}=$(scripts/measure-glibc.sh "$value")"
+              need=$(scripts/measure-glibc.sh "$value")
+              echo "${key}=${need}"
             fi
           done < linux-binaries.txt > measured.txt
 

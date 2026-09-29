@@ -90,7 +90,8 @@ while read -r url; do
         continue
     fi
     log "${FAMILY} ${VERSION}: ${name}"
-    CHECKSUMS=$(jq --arg u "$url" --arg d "$(checksum "$url")" '. + {($u): $d}' <<< "$CHECKSUMS")
+    digest=$(checksum "$url")
+    CHECKSUMS=$(jq --arg u "$url" --arg d "$digest" '. + {($u): $d}' <<< "$CHECKSUMS")
 done <<< "$NEW_URLS"
 
 mkdir -p "$NEW_DIR"
@@ -156,6 +157,8 @@ if 'build' in source:
 if mold['metadata']['version'] != new:
     sys.exit(f'version not replaced: expected {new}')
 for url, sha256 in pairs:
+    if not re.fullmatch(r'[0-9a-f]{64}', sha256):
+        sys.exit(f'{url} has no valid checksum')
     if checksums.get(url) != sha256:
         sys.exit(f'{url} does not have the expected checksum')
 if sorted(u for u, _ in pairs) != sorted(checksums):
