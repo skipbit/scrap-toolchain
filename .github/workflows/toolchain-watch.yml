@@ -121,15 +121,24 @@ jobs:
           MOLD_DIR=$(scripts/write-mold.sh "$BASE" "$VERSION" $MISSING)
           echo "dir=${MOLD_DIR}" >> "$GITHUB_OUTPUT"
 
+          TYPE=$(MOLD_DIR="$MOLD_DIR" python3 - <<'EOF'
+          import os, tomllib
+          with open(os.path.join(os.environ['MOLD_DIR'], 'mold.toml'), 'rb') as f:
+              print(tomllib.load(f)['source']['type'])
+          EOF
+          )
+          echo "type=${TYPE}" >> "$GITHUB_OUTPUT"
+
       # The value is carried over from the base mold, and a change upstream
       # would not fail PR Validation, so the pull request shows what the
       # release actually requires.
       - name: Measure the glibc requirement
-        if: steps.earlier.outputs.skip == 'false' && matrix.release.family == 'llvm'
+        if: steps.earlier.outputs.skip == 'false' && steps.mold.outputs.type == 'fetch'
         env:
           MOLD_DIR: ${{ steps.mold.outputs.dir }}
         run: |
-          # glibc.txt: "glibc_min=<carried over>", then "<arch>=<measured>"
+          # linux-binaries.txt: "glibc_min <carried over>", then
+          # "<arch> <url>" per Linux binary, in mold order.
           python3 - > linux-binaries.txt <<'EOF'
           import os, tomllib
           with open(os.path.join(os.environ['MOLD_DIR'], 'mold.toml'), 'rb') as f:
@@ -140,14 +149,34 @@ jobs:
                   print(b['arch'], b['url'])
           EOF
 
+          # measured.txt: "glibc_min=<carried over>", then "<arch>=<measured>"
           while read -r key value; do
             if [[ "$key" == "glibc_min" ]]; then
               echo "glibc_min=${value}"
             else
               echo "${key}=$(scripts/measure-glibc.sh "$value")"
             fi
-          done < linux-binaries.txt > glibc.txt
-          cat glibc.txt
+          done < linux-binaries.txt > measured.txt
+
+          # glibc-section.md: the pull request body fragment describing the
+          # requirement, including the "differs" warning when needed.
+          python3 - measured.txt > glibc-section.md <<'EOF'
+          import sys
+          with open(sys.argv[1]) as f:
+              rows = dict(line.strip().split('=', 1) for line in f)
+          glibc_min = rows.pop('glibc_min')
+          print(f"`glibc_min` is carried over as {glibc_min}. clang and lld")
+          print("in this release require:")
+          print()
+          for arch, need in rows.items():
+              print(f"- {arch}: {need}")
+          print()
+          if any(need != glibc_min for need in rows.values()):
+              print("**This differs from `glibc_min`.** Decide which value")
+              print("to keep before merging.")
+              print()
+          EOF
+          cat glibc-section.md
 
       - name: Open the pull request
         if: steps.earlier.outputs.skip == 'false'
@@ -160,6 +189,7 @@ jobs:
           BASE: ${{ matrix.release.base }}
           MOLD_DIR: ${{ steps.mold.outputs.dir }}
           MISSING: ${{ join(matrix.release.missing, ', ') }}
+          SOURCE_TYPE: ${{ steps.mold.outputs.type }}
         run: |
           TITLE="feat: add ${FAMILY^^} ${VERSION} mold definition"
 
@@ -174,20 +204,10 @@ jobs:
               echo "and the rest are left out."
               echo
             fi
-            if [[ -f glibc.txt ]]; then
-              GLIBC_MIN=$(sed -n 's/^glibc_min=//p' glibc.txt)
-              echo "\`glibc_min\` is carried over as ${GLIBC_MIN}. clang and lld"
-              echo "in this release require:"
-              echo
-              sed -n '/^glibc_min=/!s/^\(.*\)=\(.*\)$/- \1: \2/p' glibc.txt
-              echo
-              if sed -n '/^glibc_min=/!s/^.*=//p' glibc.txt | grep -qvxF "$GLIBC_MIN"; then
-                echo "**This differs from \`glibc_min\`.** Decide which value"
-                echo "to keep before merging."
-                echo
-              fi
+            if [[ -f glibc-section.md ]]; then
+              cat glibc-section.md
             fi
-            if [[ "$FAMILY" == "gcc" ]]; then
+            if [[ "$SOURCE_TYPE" == "build" ]]; then
               echo "PR Validation only configures GCC. The full build and the"
               echo "smoke test run after merging; if they fail, fix the mold in"
               echo "a follow-up pull request."

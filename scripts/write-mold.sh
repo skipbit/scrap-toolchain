@@ -101,37 +101,65 @@ src, dst, old, new, checksums, *missing = sys.argv[1:]
 checksums = json.loads(checksums)
 
 # Edits the text rather than re-serializing, so that comments and layout
-# carry over. A binaries block runs from its header to the next table.
+# carry over. A block runs from a header line (or the start of the file) to
+# the next header line, and is decided on its own: version first, then its
+# own url line (not one carried over from an earlier block).
+def process_block(block):
+    out, url = [], None
+    for line in block:
+        m = re.match(r'(\s*version\s*=\s*)"(.*)"', line)
+        if m and m.group(2) == old:
+            line = f'{m.group(1)}"{new}"\n'
+        m = re.match(r'(\s*(?:url|source_url)\s*=\s*)"(.*)"', line)
+        if m:
+            url = m.group(2).replace(old, new)
+        out.append(line)
+    if url is None:
+        return out
+    if url.rsplit('/', 1)[1] in missing:
+        return []
+    if url not in checksums:
+        sys.exit(f'no checksum for {url}; this URL key is not supported')
+    result = []
+    for line in out:
+        m = re.match(r'(\s*(?:url|source_url)\s*=\s*)"(.*)"', line)
+        if m:
+            line = f'{m.group(1)}"{url}"\n'
+        m = re.match(r'(\s*(?:sha256|source_sha256)\s*=\s*)"(.*)"', line)
+        if m:
+            line = f'{m.group(1)}"{checksums[url]}"\n'
+        result.append(line)
+    return result
+
 lines = open(src).read().splitlines(keepends=True)
-out, block, skipping, url = [], [], False, None
+blocks, current = [], []
 for line in lines:
-    if line.startswith('['):
-        out += [] if skipping else block
-        block, skipping = [], False
-    m = re.match(r'(\s*version\s*=\s*)"(.*)"', line)
-    if m and m.group(2) == old:
-        line = f'{m.group(1)}"{new}"\n'
-    m = re.match(r'(\s*(?:url|source_url)\s*=\s*)"(.*)"', line)
-    if m:
-        url = m.group(2).replace(old, new)
-        line = f'{m.group(1)}"{url}"\n'
-        skipping = url.rsplit('/', 1)[1] in missing
-    m = re.match(r'(\s*(?:sha256|source_sha256)\s*=\s*)"(.*)"', line)
-    if m and not skipping:
-        line = f'{m.group(1)}"{checksums[url]}"\n'
-    block.append(line)
-out += [] if skipping else block
+    if line.startswith('[') and current:
+        blocks.append(current)
+        current = []
+    current.append(line)
+blocks.append(current)
+
+out = []
+for block in blocks:
+    out += process_block(block)
 open(dst, 'w').write(''.join(out))
 
-# The result must parse, name the new version, and download only what exists.
+# The result must parse, name the new version, and every binary and build
+# source must match the checksums exactly.
 with open(dst, 'rb') as f:
     mold = tomllib.load(f)
 source = mold['source']
-urls = [b['url'] for b in source.get('binaries', [])]
+pairs = [(b['url'], b['sha256']) for b in source.get('binaries', [])]
 if 'build' in source:
-    urls.append(source['build']['source_url'])
-assert mold['metadata']['version'] == new, 'version not replaced'
-assert sorted(urls) == sorted(checksums), 'URLs do not match the checksums'
+    pairs.append((source['build']['source_url'], source['build']['source_sha256']))
+if mold['metadata']['version'] != new:
+    sys.exit(f'version not replaced: expected {new}')
+for url, sha256 in pairs:
+    if checksums.get(url) != sha256:
+        sys.exit(f'{url} does not have the expected checksum')
+if sorted(u for u, _ in pairs) != sorted(checksums):
+    sys.exit('URLs do not match the checksums')
 EOF
 
 echo "$NEW_DIR"

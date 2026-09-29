@@ -8,6 +8,8 @@
 # in the archive may require a newer glibc; they are not what a compiler
 # toolchain is used for, so they are not measured.
 #
+# Requires GNU tar (for the --wildcards option).
+#
 # Output: the highest required glibc version on stdout (e.g. 2.34); the
 #         version per executable on stderr
 #

@@ -36,7 +36,7 @@ GRACE_DAYS=7
 log() { echo "$1" >&2; }
 die() { echo "ERROR: $1" >&2; exit 2; }
 
-for cmd in gh jq curl python3 date; do
+for cmd in gh jq curl python3; do
     command -v "$cmd" > /dev/null || die "$cmd is required"
 done
 
@@ -93,7 +93,14 @@ RESULT='[]'
 
 # Args: $1 = release date (ISO 8601). Succeeds when older than GRACE_DAYS.
 past_grace() {
-    [[ -n "$1" ]] && (( $(date +%s) - $(date -d "$1" +%s) > GRACE_DAYS * 86400 ))
+    [[ -n "$1" ]] || return 1
+    python3 - "$1" "$GRACE_DAYS" <<'EOF'
+import sys
+from datetime import datetime, timedelta, timezone
+published = datetime.fromisoformat(sys.argv[1].replace('Z', '+00:00'))
+grace = timedelta(days=int(sys.argv[2]))
+sys.exit(0 if datetime.now(timezone.utc) - published > grace else 1)
+EOF
 }
 
 # Args: $1 = family, $2 = version, $3 = base mold dir, $4.. = missing files
