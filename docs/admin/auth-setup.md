@@ -4,13 +4,14 @@ This document describes the authentication and permissions configuration require
 
 ## Overview
 
-The pipeline has three workflows with distinct permission requirements:
+The pipeline has four workflows with distinct permission requirements:
 
 | Workflow | Trigger | Token Type | Permissions |
 |----------|---------|------------|-------------|
 | `pr-validation.yml` | `pull_request` | Default `GITHUB_TOKEN` | `contents: read`, `pull-requests: write` <!-- Required for posting validation failure comments on PRs --> |
 | `ingot-cast.yml` | `push` to main / `workflow_dispatch` | Default `GITHUB_TOKEN` | `contents: read`, `packages: write` <!-- Required for pushing ingots to ghcr.io --> |
 | `index-update.yml` | `workflow_run` / `workflow_dispatch` | **GitHub App token** (push) and default `GITHUB_TOKEN` (artifact download) | App: `contents: write`; workflow block: `contents: write`, `actions: read` <!-- actions: read is what the default token needs to download artifacts from the triggering run --> |
+| `toolchain-watch.yml` | `schedule` (weekly) / `workflow_dispatch` | **GitHub App token** (branch push and pull request) and default `GITHUB_TOKEN` (failure issue) | App: `contents: write`, `pull_requests: write`; workflow block: `contents: read`; failure job: `issues: write` <!-- Pull requests opened with the default token do not start PR Validation --> |
 
 ### Why index-update needs a GitHub App token
 
@@ -28,7 +29,7 @@ A **deploy key** is another alternative. Deploy keys can push to protected branc
 **Chosen approach**: GitHub App token via the [`actions/create-github-app-token`](https://github.com/actions/create-github-app-token) action.
 
 **Rationale**:
-- Fine-grained permissions (only `contents: write` on this repository)
+- Fine-grained permissions (only `contents: write` and `pull_requests: write` on this repository)
 - Pushes trigger subsequent workflows (unlike `GITHUB_TOKEN`)
 - Can be added as a bypass actor in rulesets for controlled direct pushes
 - Short-lived tokens (1 hour expiry) — no long-lived PAT or SSH key to manage
@@ -46,6 +47,7 @@ A **deploy key** is another alternative. Deploy keys can push to protected branc
    - **Permissions**:
      - Repository permissions:
        - **Contents**: Read & write (for git push)
+       - **Pull requests**: Read & write (for `toolchain-watch.yml` to open pull requests)
      - No organization permissions needed
    - **Where can this GitHub App be installed?**: Only on this account
 3. Click **Create GitHub App**
@@ -245,15 +247,15 @@ permissions:
 
 - The GitHub App private key is stored as a repository secret and never exposed in logs
 - App tokens are short-lived (1 hour expiry) and scoped to this repository only
-- The App has minimal permissions: only `contents: write`
+- The App has minimal permissions: only `contents: write` and `pull_requests: write`
 - `pr-validation.yml` runs on `pull_request` events (not `pull_request_target`), so fork PRs cannot access secrets or write to the repository
-- `ingot-cast.yml` and `index-update.yml` only run after merge to `main`, ensuring only reviewed code executes with write permissions
+- `ingot-cast.yml` and `index-update.yml` only run after merge to `main`, and the schedule of `toolchain-watch.yml` runs the version on `main`, ensuring only reviewed code executes with write permissions
 
 ## Troubleshooting
 
 ### "Resource not accessible by integration"
 - Verify the GitHub App is installed on the `scrap-toolchain` repository
-- Check that the App has `contents: write` permission
+- Check that the App has `contents: write` permission, and `pull_requests: write` for `toolchain-watch.yml`
 - Ensure secrets `APP_ID` and `APP_PRIVATE_KEY` are correctly set
 
 ### index-update push rejected by branch protection
