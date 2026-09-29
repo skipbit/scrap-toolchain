@@ -1,0 +1,45 @@
+[metadata]
+schema_version = 1
+family = "llvm"
+version = "22.1.2"
+status = "active"
+license = "Apache-2.0 WITH LLVM-exception"
+license_files = ["LICENSE.TXT"]
+homepage = "https://llvm.org"
+description = "LLVM toolchain (Clang, LLD, libc++)"
+
+[metadata.components]
+compiler = "clang"
+
+[source]
+type = "fetch"
+glibc_min = "2.34"
+
+[[source.binaries]]
+platform = "linux"
+arch = "x86_64"
+url = "https://github.com/llvm/llvm-project/releases/download/llvmorg-22.1.2/LLVM-22.1.2-Linux-X64.tar.xz"
+sha256 = "ff32497b6801267ee427bc69cdaeecfb2d19578af8c2a942e864c45215f9a2ac"
+
+[[source.binaries]]
+platform = "linux"
+arch = "aarch64"
+url = "https://github.com/llvm/llvm-project/releases/download/llvmorg-22.1.2/LLVM-22.1.2-Linux-ARM64.tar.xz"
+sha256 = "cf2e84d965a95954971cafc71d18c0eb38e723c3ac7276286fd5636df4374b3a"
+
+[[source.binaries]]
+platform = "darwin"
+arch = "aarch64"
+url = "https://github.com/llvm/llvm-project/releases/download/llvmorg-22.1.2/LLVM-22.1.2-macOS-ARM64.tar.xz"
+sha256 = "7b290ec4529c309b6b952d64a3513595c816dff1c217d54466a586d6e35dcec9"
+
+[test]
+hello_world_source = """
+#include <iostream>
+int main() {
+    std::cout << "Hello, scrap!" << std::endl;
+    return 0;
+}
+"""
+compile_command = "{compiler}++ -std=c++23 -fuse-ld=lld -o hello hello.cpp"
+expected_output = "Hello, scrap!\n"
