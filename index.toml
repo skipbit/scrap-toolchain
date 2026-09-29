@@ -1,6 +1,6 @@
 [index]
 schema_version = 1
-generated_at = "2026-09-29T04:15:23Z"
+generated_at = "2026-09-29T04:46:42Z"
 generator = "scripts/generate-index.sh"
 
 [[toolchains]]
@@ -55,5 +55,34 @@ platform = "linux"
 arch = "x86_64"
 url = "https://github.com/llvm/llvm-project/releases/download/llvmorg-22.1.0/LLVM-22.1.0-Linux-X64.tar.xz"
 sha256 = "8d662e425e46c48b45f5f970770b5e37f323607c8c2cbc371593fc9c4ba1e7b3"
+glibc_version = "2.34"
+
+[[toolchains]]
+family = "llvm"
+version = "22.1.1"
+status = "active"
+license = "Apache-2.0 WITH LLVM-exception"
+source_type = "fetch"
+compiler = "clang"
+origin = "upstream"
+
+[[toolchains.ingots]]
+platform = "darwin"
+arch = "aarch64"
+url = "https://github.com/llvm/llvm-project/releases/download/llvmorg-22.1.1/LLVM-22.1.1-macOS-ARM64.tar.xz"
+sha256 = "3839802601439300fc8d1d378bc26732e879e1ca80a220f7d6764ed229053e92"
+
+[[toolchains.ingots]]
+platform = "linux"
+arch = "aarch64"
+url = "https://github.com/llvm/llvm-project/releases/download/llvmorg-22.1.1/LLVM-22.1.1-Linux-ARM64.tar.xz"
+sha256 = "a807a16a4dd9a288b6ad3d507df4eae47dfdfbccab118170ebd216b85370a065"
+glibc_version = "2.34"
+
+[[toolchains.ingots]]
+platform = "linux"
+arch = "x86_64"
+url = "https://github.com/llvm/llvm-project/releases/download/llvmorg-22.1.1/LLVM-22.1.1-Linux-X64.tar.xz"
+sha256 = "efc4d945744f951df00ec72c5b31da5d5a2eaf1d53cc7c9d0644f93f0f9e817d"
 glibc_version = "2.34"
 
