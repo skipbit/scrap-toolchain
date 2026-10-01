@@ -109,6 +109,16 @@
           "pattern": "^[0-9]+\\.[0-9]+$",
           "description": "Minimum glibc version required by pre-built binaries (e.g., 2.34). When specified, the build container is selected to satisfy this requirement."
         },
+        "glibc_exclude": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "pattern": "^[^/].*[^/]$"
+          },
+          "uniqueItems": true,
+          "minItems": 1,
+          "description": "Paths relative to the ingot root (e.g., bin/llvm-exegesis) left out when measuring the glibc version the ingot requires. Each path must exist in the ingot."
+        },
         "platforms": { "$ref": "#/$defs/platformSupport" },
         "build_fallback": { "$ref": "#/$defs/buildFallback" },
         "build": { "$ref": "#/$defs/buildDefinition" }
