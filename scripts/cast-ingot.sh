@@ -40,6 +40,7 @@ OUTPUT_DIR="${OUTPUT_DIR:-./output}"
 CAST_STAGE="${CAST_STAGE:-}"
 STAGE_ARTIFACT_DIR="${STAGE_ARTIFACT_DIR:-}"
 
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 MAX_DL_RETRIES=3
 GLIBC_BASELINE=$(python3 -c "
 try:
@@ -99,6 +100,17 @@ pass() { echo -e "  ${GREEN}PASS${RESET}: $1"; }
 fail() { echo -e "  ${RED}FAIL${RESET}: $1"; }
 warn() { echo -e "  ${YELLOW}WARN${RESET}: $1"; }
 info() { echo -e "  ${BOLD}INFO${RESET}: $1"; }
+
+# Measures the glibc version STAGING_DIR requires, leaving out the paths in
+# source.glibc_exclude. Output: version on stdout
+measure_glibc() {
+    local excluded_lines excluded=()
+    excluded_lines=$(jq -r '.source.glibc_exclude // [] | .[]' "$MOLD_JSON") || return 1
+    if [[ -n "$excluded_lines" ]]; then
+        mapfile -t excluded <<< "$excluded_lines"
+    fi
+    "${SCRIPT_DIR}/measure-glibc.sh" "$STAGING_DIR" "${excluded[@]}"
+}
 
 compute_sha256() {
     if command -v sha256sum &>/dev/null; then
@@ -238,13 +250,9 @@ except ImportError:
     exit 3
 fi
 
-READELF_AVAILABLE=false
-if [[ "$PLATFORM" == "linux" ]]; then
-    if command -v readelf &>/dev/null; then
-        READELF_AVAILABLE=true
-    else
-        warn "readelf is not available; glibc compatibility check will be skipped"
-    fi
+if [[ "$PLATFORM" == "linux" ]] && ! command -v readelf &>/dev/null; then
+    echo "Error: readelf is required to measure the glibc requirement"
+    exit 3
 fi
 
 MOLD_TOML="${MOLD_DIR}/mold.toml"
@@ -553,51 +561,34 @@ if [[ "$SOURCE_TYPE" == "fetch" ]]; then
     echo ""
 
     # --- Step 8: glibc compatibility check ---
+    # glibc_min is what the index publishes for these binaries, so it must
+    # not be lower than what they require. A higher value is only warned
+    # about: other architectures of the same mold may require more.
     echo -e "${BOLD}8. glibc compatibility check${RESET}"
 
     GLIBC_VERSION=""
 
     if [[ "$PLATFORM" != "linux" ]]; then
         info "Skipped (non-Linux platform)"
-    elif [[ "$READELF_AVAILABLE" != "true" ]]; then
-        warn "readelf not available; skipping glibc check"
     else
-        MAX_GLIBC=""
-        for binary in "${STAGING_DIR}/bin"/*; do
-            [[ -f "$binary" && -x "$binary" ]] || continue
-
-            # Check if it is an ELF binary
-            if ! file "$binary" 2>/dev/null | grep -q "ELF"; then
-                continue
-            fi
-
-            BIN_GLIBC=$(readelf --version-info "$binary" 2>/dev/null \
-                | grep -o 'GLIBC_[0-9.]*' \
-                | sed 's/GLIBC_//' \
-                | sort -V \
-                | tail -1) || true
-
-            if [[ -n "$BIN_GLIBC" ]]; then
-                if [[ -z "$MAX_GLIBC" ]]; then
-                    MAX_GLIBC="$BIN_GLIBC"
-                else
-                    HIGHER=$(printf '%s\n%s' "$MAX_GLIBC" "$BIN_GLIBC" | sort -V | tail -1)
-                    MAX_GLIBC="$HIGHER"
-                fi
-            fi
-        done
-
-        if [[ -n "$MAX_GLIBC" ]]; then
-            GLIBC_VERSION="$MAX_GLIBC"
-            BASELINE_CHECK=$(printf '%s\n%s' "$GLIBC_BASELINE" "$MAX_GLIBC" | sort -V | tail -1)
-            if [[ "$BASELINE_CHECK" != "$GLIBC_BASELINE" ]]; then
-                warn "Required glibc ${MAX_GLIBC} exceeds baseline ${GLIBC_BASELINE}"
-                add_summary "- :warning: glibc ${MAX_GLIBC} > baseline ${GLIBC_BASELINE}"
-            else
-                pass "glibc requirement: ${MAX_GLIBC} (<= ${GLIBC_BASELINE})"
-            fi
+        GLIBC_VERSION=$(measure_glibc) || {
+            fail "Cannot measure the glibc requirement"
+            exit 3
+        }
+        GLIBC_MIN=$(jq -r '.source.glibc_min // empty' "$MOLD_JSON")
+        if [[ -z "$GLIBC_MIN" ]]; then
+            fail "source.glibc_min is required for Linux binaries; they require glibc ${GLIBC_VERSION}"
+            add_summary "- :x: source.glibc_min missing (required: ${GLIBC_VERSION})"
+            exit 2
+        elif [[ "$GLIBC_VERSION" == "$GLIBC_MIN" ]]; then
+            pass "glibc requirement: ${GLIBC_VERSION} (= glibc_min)"
+        elif [[ "$(printf '%s\n%s' "$GLIBC_MIN" "$GLIBC_VERSION" | sort -V | tail -1)" == "$GLIBC_VERSION" ]]; then
+            fail "Required glibc ${GLIBC_VERSION} exceeds glibc_min ${GLIBC_MIN}"
+            add_summary "- :x: glibc ${GLIBC_VERSION} > glibc_min ${GLIBC_MIN}"
+            exit 2
         else
-            info "No glibc version requirements detected"
+            warn "Required glibc ${GLIBC_VERSION} is below glibc_min ${GLIBC_MIN}"
+            add_summary "- :warning: glibc ${GLIBC_VERSION} < glibc_min ${GLIBC_MIN}"
         fi
     fi
     echo ""
@@ -605,7 +596,6 @@ if [[ "$SOURCE_TYPE" == "fetch" ]]; then
     # --- Step 9: Smoke test ---
     echo -e "${BOLD}9. Smoke test${RESET}"
 
-    SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
     SMOKE_TEST="${SCRIPT_DIR}/smoke-test.sh"
 
     if [[ ! -x "$SMOKE_TEST" ]]; then
@@ -1213,44 +1203,17 @@ elif [[ "$SOURCE_TYPE" == "build" ]]; then
 
         if [[ "$PLATFORM" != "linux" ]]; then
             info "Skipped (non-Linux platform)"
-        elif [[ "$READELF_AVAILABLE" != "true" ]]; then
-            warn "readelf not available; skipping glibc check"
         else
-            MAX_GLIBC=""
-            for binary in "${STAGING_DIR}/bin"/*; do
-                [[ -f "$binary" && -x "$binary" ]] || continue
-
-                if ! file "$binary" 2>/dev/null | grep -q "ELF"; then
-                    continue
-                fi
-
-                BIN_GLIBC=$(readelf --version-info "$binary" 2>/dev/null \
-                    | grep -o 'GLIBC_[0-9.]*' \
-                    | sed 's/GLIBC_//' \
-                    | sort -V \
-                    | tail -1) || true
-
-                if [[ -n "$BIN_GLIBC" ]]; then
-                    if [[ -z "$MAX_GLIBC" ]]; then
-                        MAX_GLIBC="$BIN_GLIBC"
-                    else
-                        HIGHER=$(printf '%s\n%s' "$MAX_GLIBC" "$BIN_GLIBC" | sort -V | tail -1)
-                        MAX_GLIBC="$HIGHER"
-                    fi
-                fi
-            done
-
-            if [[ -n "$MAX_GLIBC" ]]; then
-                GLIBC_VERSION="$MAX_GLIBC"
-                BASELINE_CHECK=$(printf '%s\n%s' "$GLIBC_BASELINE" "$MAX_GLIBC" | sort -V | tail -1)
-                if [[ "$BASELINE_CHECK" != "$GLIBC_BASELINE" ]]; then
-                    warn "Required glibc ${MAX_GLIBC} exceeds baseline ${GLIBC_BASELINE}"
-                    add_summary "- :warning: glibc ${MAX_GLIBC} > baseline ${GLIBC_BASELINE}"
-                else
-                    pass "glibc requirement: ${MAX_GLIBC} (<= ${GLIBC_BASELINE})"
-                fi
+            GLIBC_VERSION=$(measure_glibc) || {
+                fail "Cannot measure the glibc requirement"
+                exit 3
+            }
+            BASELINE_CHECK=$(printf '%s\n%s' "$GLIBC_BASELINE" "$GLIBC_VERSION" | sort -V | tail -1)
+            if [[ "$BASELINE_CHECK" != "$GLIBC_BASELINE" ]]; then
+                warn "Required glibc ${GLIBC_VERSION} exceeds baseline ${GLIBC_BASELINE}"
+                add_summary "- :warning: glibc ${GLIBC_VERSION} > baseline ${GLIBC_BASELINE}"
             else
-                info "No glibc version requirements detected"
+                pass "glibc requirement: ${GLIBC_VERSION} (<= ${GLIBC_BASELINE})"
             fi
         fi
         echo ""
@@ -1294,7 +1257,6 @@ elif [[ "$SOURCE_TYPE" == "build" ]]; then
         # --- Step 15: Smoke test ---
         echo -e "${BOLD}15. Smoke test${RESET}"
 
-        SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
         SMOKE_TEST="${SCRIPT_DIR}/smoke-test.sh"
 
         if [[ ! -x "$SMOKE_TEST" ]]; then
