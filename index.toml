@@ -1,6 +1,6 @@
 [index]
 schema_version = 1
-generated_at = "2026-09-30T04:04:27Z"
+generated_at = "2026-10-02T13:04:38Z"
 generator = "scripts/generate-index.sh"
 
 [[toolchains]]
@@ -17,16 +17,16 @@ platform = "linux"
 arch = "aarch64"
 registry = "ghcr.io/skipbit/scrap-toolchain"
 tag = "gcc:15.2.0"
-digest = "sha256:331cc526115d51a11e91902daafd8caa856ad63a747e0ed59bd57090dbd13461"
-glibc_version = "2.17"
+digest = "sha256:64a58edcf0af70d4f145fc1124e57cf5543fd8f7a68aa201c872c0caba15b25a"
+glibc_version = "2.25"
 
 [[toolchains.ingots]]
 platform = "linux"
 arch = "x86_64"
 registry = "ghcr.io/skipbit/scrap-toolchain"
 tag = "gcc:15.2.0"
-digest = "sha256:9c03fe446e3c20e75ae7507e70bd9db5e3b58ef2f0d6240901af5d288ab436a5"
-glibc_version = "2.17"
+digest = "sha256:94a6d23b8e23035939fd625b0e4bbbd98ce3def48527a6c1692eed7a5a2f9c9f"
+glibc_version = "2.26"
 
 [[toolchains]]
 family = "gcc"
@@ -42,16 +42,16 @@ platform = "linux"
 arch = "aarch64"
 registry = "ghcr.io/skipbit/scrap-toolchain"
 tag = "gcc:15.3.0"
-digest = "sha256:0a61919fea487417ae75e7f5b3fbdb79c1c938ab9002013e81556713303d4bbc"
-glibc_version = "2.17"
+digest = "sha256:baaba081037344867897c2357ba36c762d2a3067543a1c23d7086f8fd04a5c95"
+glibc_version = "2.25"
 
 [[toolchains.ingots]]
 platform = "linux"
 arch = "x86_64"
 registry = "ghcr.io/skipbit/scrap-toolchain"
 tag = "gcc:15.3.0"
-digest = "sha256:a1f314dee9489a3b752a9ea5b5176ad1166e24af9eabee65346ee2fe946cc781"
-glibc_version = "2.17"
+digest = "sha256:cc427ac2c492e10812f8ddfee5d4a976078b6e40551ab2119ba1a8f5c8e890ed"
+glibc_version = "2.26"
 
 [[toolchains]]
 family = "gcc"
@@ -67,7 +67,7 @@ platform = "linux"
 arch = "aarch64"
 registry = "ghcr.io/skipbit/scrap-toolchain"
 tag = "gcc:16.1.0"
-digest = "sha256:9e53d86d2fc0c14d0973aafa827639f3afe451cdbb67ff2469e857e5fc34f22d"
+digest = "sha256:dc0c46d89a6ddf86e4881eb0cfd7719e290bcd2fd8e6850fb2943eb1f8dfd5d4"
 glibc_version = "2.29"
 
 [[toolchains.ingots]]
@@ -75,8 +75,8 @@ platform = "linux"
 arch = "x86_64"
 registry = "ghcr.io/skipbit/scrap-toolchain"
 tag = "gcc:16.1.0"
-digest = "sha256:7827519db769f949fb9c2d3452842688956421d52d83d4325f4d35ed4d1cd2fd"
-glibc_version = "2.17"
+digest = "sha256:fef5a02cb61195201a468143231aaeaa7b16d5c46b758b0af5883e017055cec3"
+glibc_version = "2.26"
 
 [[toolchains]]
 family = "gcc"
@@ -92,7 +92,7 @@ platform = "linux"
 arch = "aarch64"
 registry = "ghcr.io/skipbit/scrap-toolchain"
 tag = "gcc:16.2.0"
-digest = "sha256:52add46816fe553e4e3edc55c50fedc089c407c139f1e56e979d8dcb9da08d6d"
+digest = "sha256:9715c7c485555ea4280ca05f66d88df8c4d89c4276ad788dbcd6a77e704d4400"
 glibc_version = "2.29"
 
 [[toolchains.ingots]]
@@ -100,8 +100,8 @@ platform = "linux"
 arch = "x86_64"
 registry = "ghcr.io/skipbit/scrap-toolchain"
 tag = "gcc:16.2.0"
-digest = "sha256:1a0b5356c3941fa2a1832b960b62d1e9ddcd856a0b10347e65fbd38e72c1322f"
-glibc_version = "2.17"
+digest = "sha256:4029f9677ce48bfded4381242abb8e918c8129e01a96d4943749af129c9aa2ca"
+glibc_version = "2.26"
 
 [[toolchains]]
 family = "llvm"
