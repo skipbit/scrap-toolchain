@@ -137,52 +137,79 @@ jobs:
           )
           echo "type=${TYPE}" >> "$GITHUB_OUTPUT"
 
-      # The value is carried over from the base mold, and a change upstream
-      # would not fail PR Validation, so the pull request shows what the
-      # release actually requires.
+      # glibc_min is what the index publishes for the binaries, so it is
+      # set to what this release measures rather than carried over.
       - name: Measure the glibc requirement
         if: steps.earlier.outputs.skip == 'false' && steps.mold.outputs.type == 'fetch'
         env:
           MOLD_DIR: ${{ steps.mold.outputs.dir }}
         run: |
-          # linux-binaries.txt: "glibc_min <carried over>", then
-          # "<arch> <url>" per Linux binary, in mold order.
-          python3 - > linux-binaries.txt <<'EOF'
+          set -o pipefail
+
+          # linux-binaries.txt: "<arch> <strip components> <sha256> <url>
+          # [root dir]" per Linux binary, in mold order; excluded.txt: one
+          # path per line
+          python3 - <<'EOF'
           import os, tomllib
           with open(os.path.join(os.environ['MOLD_DIR'], 'mold.toml'), 'rb') as f:
               source = tomllib.load(f)['source']
-          print('glibc_min', source.get('glibc_min', ''))
-          for b in source['binaries']:
-              if b['platform'] == 'linux':
-                  print(b['arch'], b['url'])
+          with open('linux-binaries.txt', 'w') as out:
+              for b in source['binaries']:
+                  if b['platform'] == 'linux':
+                      print(b['arch'], b.get('strip_components', 1), b['sha256'], b['url'],
+                            b.get('root_dir', ''), file=out)
+          with open('excluded.txt', 'w') as out:
+              for path in source.get('glibc_exclude', []):
+                  print(path, file=out)
           EOF
+          mapfile -t EXCLUDED < excluded.txt
 
-          # measured.txt: "glibc_min=<carried over>", then "<arch>=<measured>"
-          while read -r key value; do
-            if [[ "$key" == "glibc_min" ]]; then
-              echo "glibc_min=${value}"
-            else
-              need=$(scripts/measure-glibc.sh "$value")
-              echo "${key}=${need}"
-            fi
-          done < linux-binaries.txt > measured.txt
+          # measured.txt: "<arch>=<measured>"
+          # The ingot is the extracted archive, or its root_dir when the mold
+          # sets one, as in cast-ingot.sh.
+          EXTRACT_DIR="${RUNNER_TEMP}/extract"
+          ARCHIVE="${RUNNER_TEMP}/archive"
+          : > measured.txt
+          while read -r arch strip sha256 url root_dir; do
+            curl -fsSL --retry 3 -o "$ARCHIVE" "$url"
+            echo "${sha256}  ${ARCHIVE}" | sha256sum -c --quiet
+            rm -rf "$EXTRACT_DIR"
+            mkdir -p "$EXTRACT_DIR"
+            tar -xf "$ARCHIVE" --strip-components="$strip" -C "$EXTRACT_DIR"
+            rm -f "$ARCHIVE"
+            need=$(scripts/measure-glibc.sh "${EXTRACT_DIR}/${root_dir}" "${EXCLUDED[@]}")
+            echo "${arch}=${need}" >> measured.txt
+            rm -rf "$EXTRACT_DIR"
+          done < linux-binaries.txt
 
-          # glibc-section.md: the pull request body fragment describing the
-          # requirement, including the "differs" warning when needed.
-          python3 - measured.txt > glibc-section.md <<'EOF'
-          import sys
-          with open(sys.argv[1]) as f:
+          # Writes the highest measured version into the mold as glibc_min,
+          # and the pull request body fragment describing it.
+          python3 - "${MOLD_DIR}/mold.toml" measured.txt excluded.txt > glibc-section.md <<'EOF'
+          import re, sys
+          mold, measured, excluded = sys.argv[1:]
+          with open(measured) as f:
               rows = dict(line.strip().split('=', 1) for line in f)
-          glibc_min = rows.pop('glibc_min')
-          print(f"`glibc_min` is carried over as {glibc_min}. clang and lld")
-          print("in this release require:")
+          if not rows:
+              sys.exit('no Linux binary was measured')
+          need = max(rows.values(), key=lambda v: tuple(int(x) for x in v.split('.')))
+          text = open(mold).read()
+          old = re.search(r'^glibc_min = "(.*)"$', text, re.M)
+          if old is None:
+              sys.exit(f'{mold} has no glibc_min line')
+          text = text[:old.start()] + f'glibc_min = "{need}"' + text[old.end():]
+          open(mold, 'w').write(text)
+          with open(excluded) as f:
+              paths = [line.strip() for line in f if line.strip()]
+          print(f"`glibc_min` is set to {need}, the highest glibc version the")
+          print("Linux binaries require over every ELF file they contain", end='')
+          print(f" except {', '.join(f'`{p}`' for p in paths)}:" if paths else ":")
           print()
-          for arch, need in rows.items():
-              print(f"- {arch}: {need}")
+          for arch, value in rows.items():
+              print(f"- {arch}: {value}")
           print()
-          if any(need != glibc_min for need in rows.values()):
-              print("**This differs from `glibc_min`.** Decide which value")
-              print("to keep before merging.")
+          if old.group(1) != need:
+              print(f"**This changes `glibc_min` from {old.group(1)}** in the")
+              print("mold it was copied from.")
               print()
           EOF
           cat glibc-section.md

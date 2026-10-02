@@ -1,49 +1,62 @@
 #!/usr/bin/env bash
-# measure-glibc.sh — Report the glibc version an LLVM release archive needs
+# measure-glibc.sh — Report the glibc version an ingot needs
 #
-# Usage: measure-glibc.sh <archive-url>
+# Usage: measure-glibc.sh <ingot-directory> [excluded-path ...]
 #
-# Streams a .tar.xz release archive, extracts only the clang and lld
-# executables, and reads the GLIBC symbol versions they require. Other tools
-# in the archive may require a newer glibc; they are not what a compiler
-# toolchain is used for, so they are not measured.
+# Reads the GLIBC symbol versions of every ELF file in the ingot: executables
+# in bin/ and libexec/ as well as shared libraries and runtimes in lib*/.
+# Files given by their path relative to the ingot directory (e.g.
+# bin/llvm-exegesis) are left out of the measurement; each must be a file in
+# the ingot, so that an exclusion does not outlive the file it was written
+# for.
 #
-# Requires GNU tar (for the --wildcards option).
-#
-# Output: the highest required glibc version on stdout (e.g. 2.34); the
-#         version per executable on stderr
+# Output: the highest required glibc version on stdout (e.g. 2.34); the files
+#         that require it on stderr
 #
 # Exit codes:
 #   0 = Measured
-#   2 = Internal error (missing tools, download failure, executables absent)
+#   2 = Internal error (missing tools, excluded path absent, no ELF file
+#       requiring glibc)
 
 set -euo pipefail
 
-URL="${1:?Usage: measure-glibc.sh <archive-url>}"
+INGOT_DIR="${1:?Usage: measure-glibc.sh <ingot-directory> [excluded-path ...]}"
+INGOT_DIR="${INGOT_DIR%/}"
+shift
+EXCLUDED=("$@")
 
 die() { echo "ERROR: $1" >&2; exit 2; }
 
-for cmd in curl tar xz readelf; do
-    command -v "$cmd" > /dev/null || die "$cmd is required"
+command -v readelf > /dev/null || die "readelf is required"
+[[ -d "$INGOT_DIR" ]] || die "${INGOT_DIR} is not a directory"
+
+declare -A IS_EXCLUDED=()
+for path in "${EXCLUDED[@]}"; do
+    [[ -f "${INGOT_DIR}/${path}" ]] || die "excluded path ${path} is not a file in ${INGOT_DIR}"
+    IS_EXCLUDED["$path"]=1
 done
 
-TMP_DIR=$(mktemp -d)
-trap 'rm -rf "$TMP_DIR"' EXIT
+# The file list goes through a file rather than process substitution, so
+# that a failed find stops the script.
+FILE_LIST=$(mktemp)
+trap 'rm -f "$FILE_LIST"' EXIT
+find "$INGOT_DIR" -type f -print0 > "$FILE_LIST" || die "cannot list ${INGOT_DIR}"
 
-curl -fsSL --retry 3 "$URL" \
-    | tar -xJ -C "$TMP_DIR" --wildcards '*/bin/clang-[0-9]*' '*/bin/lld' \
-    || die "cannot extract clang and lld from ${URL}"
+# "<version> <path>" per ELF file that requires glibc
+REQUIREMENTS=""
+while IFS= read -r -d '' file; do
+    rel="${file#"${INGOT_DIR}"/}"
+    [[ -z "${IS_EXCLUDED[$rel]:-}" ]] || continue
+    [[ "$(head -c 4 "$file" | tr -d '\0')" == $'\x7fELF' ]] || continue
+    info=$(readelf --version-info -W "$file") || die "cannot read ${rel}"
+    need=$({ grep -oE 'GLIBC_[0-9]+(\.[0-9]+)+' <<< "$info" || true; } \
+        | sed 's/^GLIBC_//' | sort -uV | tail -1)
+    [[ -n "$need" ]] || continue
+    REQUIREMENTS+="${need} ${rel}"$'\n'
+done < "$FILE_LIST"
 
-max=""
-count=0
-while IFS= read -r -d '' exe; do
-    need=$(readelf --version-info -W "$exe" \
-        | grep -oE 'GLIBC_[0-9]+(\.[0-9]+)+' | sed 's/^GLIBC_//' | sort -uV | tail -1 || true)
-    [[ -n "$need" ]] || die "no GLIBC version found in ${exe##*/}"
-    echo "${exe##*/}: ${need}" >&2
-    max=$(printf '%s\n%s\n' "$max" "$need" | sed '/^$/d' | sort -V | tail -1)
-    count=$((count + 1))
-done < <(find "$TMP_DIR" -type f -print0)
+[[ -n "$REQUIREMENTS" ]] || die "no ELF file in ${INGOT_DIR} requires glibc"
 
-[[ "$count" -ge 2 ]] || die "expected clang and lld in ${URL}, found ${count} executable(s)"
+max=$(cut -d' ' -f1 <<< "${REQUIREMENTS%$'\n'}" | sort -V | tail -1)
+grep "^${max//./\\.} " <<< "$REQUIREMENTS" | cut -d' ' -f2- | sort | sed "s/^/${max}: /" >&2
 echo "$max"
