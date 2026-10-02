@@ -5,9 +5,10 @@
 #
 # Reads the GLIBC symbol versions of every ELF file in the ingot: executables
 # in bin/ and libexec/ as well as shared libraries and runtimes in lib*/.
-# Paths relative to the ingot directory (e.g. bin/llvm-exegesis) are left
-# out of the measurement; each must exist, so that an exclusion does not
-# outlive the file it was written for.
+# Files given by their path relative to the ingot directory (e.g.
+# bin/llvm-exegesis) are left out of the measurement; each must be a file in
+# the ingot, so that an exclusion does not outlive the file it was written
+# for.
 #
 # Output: the highest required glibc version on stdout (e.g. 2.34); the files
 #         that require it on stderr
@@ -31,7 +32,7 @@ command -v readelf > /dev/null || die "readelf is required"
 
 declare -A IS_EXCLUDED=()
 for path in "${EXCLUDED[@]}"; do
-    [[ -e "${INGOT_DIR}/${path}" ]] || die "excluded path ${path} is not in ${INGOT_DIR}"
+    [[ -f "${INGOT_DIR}/${path}" ]] || die "excluded path ${path} is not a file in ${INGOT_DIR}"
     IS_EXCLUDED["$path"]=1
 done
 

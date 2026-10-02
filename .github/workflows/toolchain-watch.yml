@@ -146,8 +146,9 @@ jobs:
         run: |
           set -o pipefail
 
-          # linux-binaries.txt: "<arch> <strip components> <sha256> <url>"
-          # per Linux binary, in mold order; excluded.txt: one path per line
+          # linux-binaries.txt: "<arch> <strip components> <sha256> <url>
+          # [root dir]" per Linux binary, in mold order; excluded.txt: one
+          # path per line
           python3 - <<'EOF'
           import os, tomllib
           with open(os.path.join(os.environ['MOLD_DIR'], 'mold.toml'), 'rb') as f:
@@ -155,7 +156,8 @@ jobs:
           with open('linux-binaries.txt', 'w') as out:
               for b in source['binaries']:
                   if b['platform'] == 'linux':
-                      print(b['arch'], b.get('strip_components', 1), b['sha256'], b['url'], file=out)
+                      print(b['arch'], b.get('strip_components', 1), b['sha256'], b['url'],
+                            b.get('root_dir', ''), file=out)
           with open('excluded.txt', 'w') as out:
               for path in source.get('glibc_exclude', []):
                   print(path, file=out)
@@ -163,19 +165,21 @@ jobs:
           mapfile -t EXCLUDED < excluded.txt
 
           # measured.txt: "<arch>=<measured>"
-          INGOT_DIR="${RUNNER_TEMP}/ingot"
+          # The ingot is the extracted archive, or its root_dir when the mold
+          # sets one, as in cast-ingot.sh.
+          EXTRACT_DIR="${RUNNER_TEMP}/extract"
           ARCHIVE="${RUNNER_TEMP}/archive"
           : > measured.txt
-          while read -r arch strip sha256 url; do
+          while read -r arch strip sha256 url root_dir; do
             curl -fsSL --retry 3 -o "$ARCHIVE" "$url"
             echo "${sha256}  ${ARCHIVE}" | sha256sum -c --quiet
-            rm -rf "$INGOT_DIR"
-            mkdir -p "$INGOT_DIR"
-            tar -xf "$ARCHIVE" --strip-components="$strip" -C "$INGOT_DIR"
+            rm -rf "$EXTRACT_DIR"
+            mkdir -p "$EXTRACT_DIR"
+            tar -xf "$ARCHIVE" --strip-components="$strip" -C "$EXTRACT_DIR"
             rm -f "$ARCHIVE"
-            need=$(scripts/measure-glibc.sh "$INGOT_DIR" "${EXCLUDED[@]}")
+            need=$(scripts/measure-glibc.sh "${EXTRACT_DIR}/${root_dir}" "${EXCLUDED[@]}")
             echo "${arch}=${need}" >> measured.txt
-            rm -rf "$INGOT_DIR"
+            rm -rf "$EXTRACT_DIR"
           done < linux-binaries.txt
 
           # Writes the highest measured version into the mold as glibc_min,

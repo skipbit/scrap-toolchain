@@ -117,7 +117,7 @@
           },
           "uniqueItems": true,
           "minItems": 1,
-          "description": "Paths relative to the ingot root (e.g., bin/llvm-exegesis) left out when measuring the glibc version the ingot requires. Each path must exist in the ingot."
+          "description": "Files, by path relative to the ingot root (e.g., bin/llvm-exegesis), left out when measuring the glibc version the ingot requires. Each must be a file in the ingot; directories are not accepted."
         },
         "platforms": { "$ref": "#/$defs/platformSupport" },
         "build_fallback": { "$ref": "#/$defs/buildFallback" },
