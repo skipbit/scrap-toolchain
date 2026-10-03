@@ -1,0 +1,46 @@
+[metadata]
+schema_version = 1
+family = "llvm"
+version = "20.1.0"
+status = "active"
+license = "Apache-2.0 WITH LLVM-exception"
+license_files = ["LICENSE.TXT"]
+homepage = "https://llvm.org"
+description = "LLVM toolchain (Clang, LLD, libc++)"
+
+[metadata.components]
+compiler = "clang"
+
+[source]
+type = "fetch"
+glibc_min = "2.34"
+glibc_exclude = ["bin/llvm-exegesis", "bin/bbc", "bin/flang-20"]
+
+[[source.binaries]]
+platform = "linux"
+arch = "x86_64"
+url = "https://github.com/llvm/llvm-project/releases/download/llvmorg-20.1.0/LLVM-20.1.0-Linux-X64.tar.xz"
+sha256 = "954ac51498519f6ed9540714fb04bc401f70039b296a8160dd1559be380788d7"
+
+[[source.binaries]]
+platform = "linux"
+arch = "aarch64"
+url = "https://github.com/llvm/llvm-project/releases/download/llvmorg-20.1.0/LLVM-20.1.0-Linux-ARM64.tar.xz"
+sha256 = "9d1bbf3f6d4d011e3b8b4b585f686bc968474917f37d3b82b4a534f456168c67"
+
+[[source.binaries]]
+platform = "darwin"
+arch = "aarch64"
+url = "https://github.com/llvm/llvm-project/releases/download/llvmorg-20.1.0/LLVM-20.1.0-macOS-ARM64.tar.xz"
+sha256 = "2c42ec26ec50c4bf8b95585f762b9d2f5b385d170dee772d9c1d6c9a7190dcef"
+
+[test]
+hello_world_source = """
+#include <iostream>
+int main() {
+    std::cout << "Hello, scrap!" << std::endl;
+    return 0;
+}
+"""
+compile_command = "{compiler}++ -std=c++23 -fuse-ld=lld -o hello hello.cpp"
+expected_output = "Hello, scrap!\n"
