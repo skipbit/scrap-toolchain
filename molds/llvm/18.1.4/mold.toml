@@ -1,0 +1,37 @@
+[metadata]
+schema_version = 1
+family = "llvm"
+version = "18.1.4"
+status = "active"
+license = "Apache-2.0 WITH LLVM-exception"
+license_files = ["LICENSE.TXT"]
+homepage = "https://llvm.org"
+description = "LLVM toolchain (Clang, LLD, libc++)"
+
+[metadata.components]
+compiler = "clang"
+
+[source]
+type = "fetch"
+glibc_min = "2.30"
+glibc_exclude = ["bin/llvm-exegesis"]
+
+[source.platforms]
+supported = ["linux-aarch64"]
+
+[[source.binaries]]
+platform = "linux"
+arch = "aarch64"
+url = "https://github.com/llvm/llvm-project/releases/download/llvmorg-18.1.4/clang%2Bllvm-18.1.4-aarch64-linux-gnu.tar.xz"
+sha256 = "8c2f4d1606d24dc197a590acce39453abe7a302b9b92e762108f9b5a9701b1df"
+
+[test]
+hello_world_source = """
+#include <iostream>
+int main() {
+    std::cout << "Hello, scrap!" << std::endl;
+    return 0;
+}
+"""
+compile_command = "{compiler}++ -std=c++23 -fuse-ld=lld -o hello hello.cpp"
+expected_output = "Hello, scrap!\n"
