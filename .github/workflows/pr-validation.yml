@@ -25,6 +25,7 @@ jobs:
       has_build_targets: ${{ steps.classify.outputs.has_build_targets }}
       fetch_matrix: ${{ steps.classify.outputs.fetch_matrix }}
       build_molds: ${{ steps.classify.outputs.build_molds }}
+      unparsable_molds: ${{ steps.classify.outputs.unparsable_molds }}
     steps:
       - uses: actions/checkout@v7
         with:
@@ -114,11 +115,13 @@ jobs:
           # Classify molds and build fetch matrix
           FETCH_ENTRIES=()
           BUILD_MOLDS=()
+          UNPARSABLE_MOLDS=()
           HAS_FETCH=false
           HAS_BUILD=false
 
           for mold in "${VALID_MOLDS[@]}"; do
-            # Parse mold.toml with error recovery (M-3: don't kill entire job on bad mold)
+            # Parse mold.toml with error recovery (M-3: don't kill entire job
+            # on bad mold). The mold is reported by reject-unparsable-molds.
             set +e
             MOLD_INFO=$(MOLD_VAR="$mold" python3 -c "
           import tomllib, json, os
@@ -143,6 +146,7 @@ jobs:
 
             if [[ "$PARSE_EXIT" -ne 0 || -z "$MOLD_INFO" ]]; then
               echo "::warning::Failed to parse ${mold}/mold.toml; skipping"
+              UNPARSABLE_MOLDS+=("$mold")
               continue
             fi
 
@@ -271,10 +275,31 @@ jobs:
           fi
           echo "build_molds=${BUILD_JSON}" >> "$GITHUB_OUTPUT"
 
+          if [[ ${#UNPARSABLE_MOLDS[@]} -gt 0 ]]; then
+            echo "unparsable_molds=${UNPARSABLE_MOLDS[*]}" >> "$GITHUB_OUTPUT"
+          fi
+
           echo ""
           echo "=== Summary ==="
           echo "Fetch targets: ${HAS_FETCH} (${#FETCH_ENTRIES[@]} entries)"
           echo "Build targets: ${HAS_BUILD} (${#BUILD_MOLDS[@]} molds)"
+
+  # A mold that cannot be parsed gets no validation job, so it fails here
+  # rather than letting the pull request pass. The other molds are still
+  # validated.
+  reject-unparsable-molds:
+    needs: detect-changes
+    if: needs.detect-changes.outputs.unparsable_molds != ''
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Report unparsable molds
+        env:
+          MOLDS: ${{ needs.detect-changes.outputs.unparsable_molds }}
+        run: |
+          for mold in $MOLDS; do
+            echo "::error::${mold}/mold.toml cannot be parsed"
+          done
+          exit 1
 
   # Fetch-type validation: all Tier 1 platforms
   # Runs validate-mold.sh for schema/URL checks, then cast-ingot.sh for
