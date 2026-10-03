@@ -127,11 +127,15 @@ jobs:
               data = tomllib.load(f)
           binaries = data.get('source', {}).get('binaries', [])
           platforms = [{'platform': b['platform'], 'arch': b['arch']} for b in binaries]
+          # Anything but a table is passed on as is, so that it fails the
+          # declaration check below instead of the parse.
+          declared = data.get('source', {}).get('platforms')
+          supported = declared.get('supported') if isinstance(declared, dict) else declared
           print(json.dumps({
               'source_type': data['source']['type'],
               'glibc_min': data.get('source', {}).get('glibc_min', ''),
               'binary_platforms': platforms,
-              'supported': data.get('source', {}).get('platforms', {}).get('supported')
+              'supported': supported
           }))
           " 2>/dev/null)
             PARSE_EXIT=$?
@@ -155,10 +159,11 @@ jobs:
               # for them. The declaration and the binaries must agree.
               MISMATCH=$(echo "$MOLD_INFO" | jq -r '
                 select(.supported != null)
-                | [.binary_platforms[] | "\(.platform)-\(.arch)"] as $binaries
+                | if (.supported | type) != "array" then "is not a list of platforms" else
+                  [.binary_platforms[] | "\(.platform)-\(.arch)"] as $binaries
                 | (.supported - $binaries | map("\(.) is declared but has no binary"))
                   + ($binaries - .supported | map("\(.) has a binary but is not declared"))
-                | .[]')
+                  | .[] end')
               if [[ -n "$MISMATCH" ]]; then
                 while IFS= read -r line; do
                   echo "::error::${mold}: source.platforms.supported: ${line}"
@@ -167,6 +172,7 @@ jobs:
               fi
 
               # Generate matrix entries for each Tier 1 platform that has a binary
+              ENTRIES_BEFORE=${#FETCH_ENTRIES[@]}
               while IFS= read -r platform_entry; do
                 [[ -z "$platform_entry" ]] && continue
                 PLAT=$(echo "$platform_entry" | jq -r '.platform')
@@ -232,6 +238,12 @@ jobs:
                 FETCH_ENTRIES+=("$ENTRY")
                 echo "  Added: ${PLAT}-${ARCH} (runner: ${RUNNER}, container: ${CONTAINER})"
               done <<< "$TIER1_PLATFORMS"
+
+              # A mold with no Tier 1 platform would merge unvalidated.
+              if [[ ${#FETCH_ENTRIES[@]} -eq "$ENTRIES_BEFORE" ]]; then
+                echo "::error::Fetch-type mold ${mold} has no Tier 1 platform to validate"
+                exit 1
+              fi
 
             elif [[ "$SOURCE_TYPE" == "build" ]]; then
               HAS_BUILD=true
