@@ -319,6 +319,10 @@ jobs:
 
       - name: Install system prerequisites (Linux container)
         if: matrix.container
+        # tzdata comes in as a recommended package and asks for a time zone
+        # on ubuntu:20.04 unless apt runs noninteractively.
+        env:
+          DEBIAN_FRONTEND: noninteractive
         run: |
           apt-get update -qq
           apt-get install -y -qq \
