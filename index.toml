@@ -1,6 +1,6 @@
 [index]
 schema_version = 1
-generated_at = "2026-10-03T15:46:18Z"
+generated_at = "2026-10-03T16:35:33Z"
 generator = "scripts/generate-index.sh"
 
 [[toolchains]]
@@ -126,6 +126,106 @@ arch = "x86_64"
 registry = "ghcr.io/skipbit/scrap-toolchain"
 tag = "gcc:13.5.0"
 digest = "sha256:3553f74962b9ba4dc65c9492fcbdbd107f9cc8d9c51e46fc90263810ad63d1c4"
+glibc_version = "2.26"
+
+[[toolchains]]
+family = "gcc"
+version = "14.1.0"
+status = "active"
+license = "GPL-3.0-or-later WITH GCC-exception-3.1"
+source_type = "build"
+compiler = "g++"
+origin = "scrap-release"
+
+[[toolchains.ingots]]
+platform = "linux"
+arch = "aarch64"
+registry = "ghcr.io/skipbit/scrap-toolchain"
+tag = "gcc:14.1.0"
+digest = "sha256:1759e286b8822f9a5efbb14835cf34139572610704ee123c44f9995ac2e6a8fc"
+glibc_version = "2.25"
+
+[[toolchains.ingots]]
+platform = "linux"
+arch = "x86_64"
+registry = "ghcr.io/skipbit/scrap-toolchain"
+tag = "gcc:14.1.0"
+digest = "sha256:9dce3231b94d3e998987c58b1c826f290f365561f0880804224d2e03ce783c30"
+glibc_version = "2.26"
+
+[[toolchains]]
+family = "gcc"
+version = "14.2.0"
+status = "active"
+license = "GPL-3.0-or-later WITH GCC-exception-3.1"
+source_type = "build"
+compiler = "g++"
+origin = "scrap-release"
+
+[[toolchains.ingots]]
+platform = "linux"
+arch = "aarch64"
+registry = "ghcr.io/skipbit/scrap-toolchain"
+tag = "gcc:14.2.0"
+digest = "sha256:74a0bf8eb579fdbbd606f1cc4bf6bab95fc255aec8262ebcb83b16e2dfc84d12"
+glibc_version = "2.25"
+
+[[toolchains.ingots]]
+platform = "linux"
+arch = "x86_64"
+registry = "ghcr.io/skipbit/scrap-toolchain"
+tag = "gcc:14.2.0"
+digest = "sha256:88935c561b58482f0ee4662a9cb3fa6d08462ac5cbc8a0f011038582d96ef18b"
+glibc_version = "2.26"
+
+[[toolchains]]
+family = "gcc"
+version = "14.3.0"
+status = "active"
+license = "GPL-3.0-or-later WITH GCC-exception-3.1"
+source_type = "build"
+compiler = "g++"
+origin = "scrap-release"
+
+[[toolchains.ingots]]
+platform = "linux"
+arch = "aarch64"
+registry = "ghcr.io/skipbit/scrap-toolchain"
+tag = "gcc:14.3.0"
+digest = "sha256:68f3f33b0d9f5db58bfebf93bbdbbbf411fe89a77174f658097af15d68e25ba3"
+glibc_version = "2.25"
+
+[[toolchains.ingots]]
+platform = "linux"
+arch = "x86_64"
+registry = "ghcr.io/skipbit/scrap-toolchain"
+tag = "gcc:14.3.0"
+digest = "sha256:3e7738ec5fbf25e51b4ed5b994ef53ea68b623d4ca7d56625d290b96a66f2a7e"
+glibc_version = "2.26"
+
+[[toolchains]]
+family = "gcc"
+version = "14.4.0"
+status = "active"
+license = "GPL-3.0-or-later WITH GCC-exception-3.1"
+source_type = "build"
+compiler = "g++"
+origin = "scrap-release"
+
+[[toolchains.ingots]]
+platform = "linux"
+arch = "aarch64"
+registry = "ghcr.io/skipbit/scrap-toolchain"
+tag = "gcc:14.4.0"
+digest = "sha256:2f27d9b29e3150ba35ce3dce5e2de5e3c86b7efe1b004056ae699c9e0c4389b7"
+glibc_version = "2.25"
+
+[[toolchains.ingots]]
+platform = "linux"
+arch = "x86_64"
+registry = "ghcr.io/skipbit/scrap-toolchain"
+tag = "gcc:14.4.0"
+digest = "sha256:be2d29fbfca7d608da043bae1f29cdebc979f0cd03437b7ff37c4ba3d7a5d46e"
 glibc_version = "2.26"
 
 [[toolchains]]
