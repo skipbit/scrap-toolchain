@@ -1,0 +1,47 @@
+[metadata]
+schema_version = 1
+family = "gcc"
+version = "12.2.0"
+status = "active"
+license = "GPL-3.0-or-later WITH GCC-exception-3.1"
+license_files = ["COPYING", "COPYING.RUNTIME"]
+homepage = "https://gcc.gnu.org"
+description = "GNU Compiler Collection (GCC)"
+
+[metadata.components]
+compiler = "g++"
+stdlib = "libstdc++"
+
+[source]
+type = "build"
+
+# GCC 12.2.0 does not support aarch64-apple-darwin natively.
+# Homebrew applies custom patches (iains/gcc-14-branch) to enable it.
+[source.platforms]
+supported = ["linux-x86_64", "linux-aarch64"]
+
+[source.build]
+source_url = "https://ftp.gnu.org/gnu/gcc/gcc-12.2.0/gcc-12.2.0.tar.xz"
+source_sha256 = "e549cf9cf3594a00e27b6589d4322d70e0720cdd213f39beb4181e06926230ff"
+configure_args = [
+    "--enable-languages=c,c++",
+    "--disable-multilib",
+    "--disable-bootstrap",
+    "--enable-checking=release",
+    "--disable-nls",
+]
+make_args = ["-j$(nproc)"]
+
+[source.build.prerequisites]
+apt = ["libgmp-dev", "libmpfr-dev", "libmpc-dev", "libisl-dev"]
+
+[test]
+hello_world_source = """
+#include <iostream>
+int main() {
+    std::cout << "Hello, scrap!" << std::endl;
+    return 0;
+}
+"""
+compile_command = "{compiler} -std=c++23 -o hello hello.cpp"
+expected_output = "Hello, scrap!\n"
