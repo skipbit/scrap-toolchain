@@ -1,6 +1,6 @@
 [index]
 schema_version = 1
-generated_at = "2026-10-03T16:35:33Z"
+generated_at = "2026-10-04T00:31:35Z"
 generator = "scripts/generate-index.sh"
 
 [[toolchains]]
@@ -327,6 +327,166 @@ registry = "ghcr.io/skipbit/scrap-toolchain"
 tag = "gcc:16.2.0"
 digest = "sha256:4029f9677ce48bfded4381242abb8e918c8129e01a96d4943749af129c9aa2ca"
 glibc_version = "2.26"
+
+[[toolchains]]
+family = "llvm"
+version = "17.0.1"
+status = "active"
+license = "Apache-2.0 WITH LLVM-exception"
+source_type = "fetch"
+compiler = "clang"
+origin = "upstream"
+
+[[toolchains.ingots]]
+platform = "darwin"
+arch = "aarch64"
+url = "https://github.com/llvm/llvm-project/releases/download/llvmorg-17.0.1/clang%2Bllvm-17.0.1-arm64-apple-darwin22.0.tar.xz"
+sha256 = "d5678bc475c42c3ab7c0ee35ebd95534d81b6816507cfc9e42d86136d8315ebc"
+
+[[toolchains.ingots]]
+platform = "linux"
+arch = "aarch64"
+url = "https://github.com/llvm/llvm-project/releases/download/llvmorg-17.0.1/clang%2Bllvm-17.0.1-aarch64-linux-gnu.tar.xz"
+sha256 = "d2eaca72ce3aab0b343e01b2233303628ff43a43a6107dca1aa8d3039da847f5"
+glibc_version = "2.30"
+
+[[toolchains]]
+family = "llvm"
+version = "17.0.2"
+status = "active"
+license = "Apache-2.0 WITH LLVM-exception"
+source_type = "fetch"
+compiler = "clang"
+origin = "upstream"
+
+[[toolchains.ingots]]
+platform = "darwin"
+arch = "aarch64"
+url = "https://github.com/llvm/llvm-project/releases/download/llvmorg-17.0.2/clang%2Bllvm-17.0.2-arm64-apple-darwin22.0.tar.xz"
+sha256 = "dfb3226b3e16f5b8d3882f3ff0e8ebf40b26dd1e97d879197430b930d773ea84"
+
+[[toolchains.ingots]]
+platform = "linux"
+arch = "aarch64"
+url = "https://github.com/llvm/llvm-project/releases/download/llvmorg-17.0.2/clang%2Bllvm-17.0.2-aarch64-linux-gnu.tar.xz"
+sha256 = "b08480f2a77167556907869065b0e0e30f4d6cb64ecc625d523b61c22ff0200f"
+glibc_version = "2.34"
+
+[[toolchains.ingots]]
+platform = "linux"
+arch = "x86_64"
+url = "https://github.com/llvm/llvm-project/releases/download/llvmorg-17.0.2/clang%2Bllvm-17.0.2-x86_64-linux-gnu-ubuntu-22.04.tar.xz"
+sha256 = "df297df804766f8fb18f10a188af78e55d82bb8881751408c2fa694ca19163a8"
+glibc_version = "2.34"
+
+[[toolchains]]
+family = "llvm"
+version = "17.0.3"
+status = "active"
+license = "Apache-2.0 WITH LLVM-exception"
+source_type = "fetch"
+compiler = "clang"
+origin = "upstream"
+
+[[toolchains.ingots]]
+platform = "darwin"
+arch = "aarch64"
+url = "https://github.com/llvm/llvm-project/releases/download/llvmorg-17.0.3/clang%2Bllvm-17.0.3-arm64-apple-darwin22.0.tar.xz"
+sha256 = "da452a1aa33954c123d5264bd849ebc572a28e8511b868b43e82d6960fda60d7"
+
+[[toolchains.ingots]]
+platform = "linux"
+arch = "aarch64"
+url = "https://github.com/llvm/llvm-project/releases/download/llvmorg-17.0.3/clang%2Bllvm-17.0.3-aarch64-linux-gnu.tar.xz"
+sha256 = "289da98e4cbc157153e987ff24ce835717a36cfab03ecd03bf359378ee4ae9d7"
+glibc_version = "2.30"
+
+[[toolchains]]
+family = "llvm"
+version = "17.0.4"
+status = "active"
+license = "Apache-2.0 WITH LLVM-exception"
+source_type = "fetch"
+compiler = "clang"
+origin = "upstream"
+
+[[toolchains.ingots]]
+platform = "darwin"
+arch = "aarch64"
+url = "https://github.com/llvm/llvm-project/releases/download/llvmorg-17.0.4/clang%2Bllvm-17.0.4-arm64-apple-darwin22.0.tar.xz"
+sha256 = "5d514fa64a290dca53288ce859e6ec59a0b48198b3a5b27ca53b6fe80a977b8d"
+
+[[toolchains.ingots]]
+platform = "linux"
+arch = "aarch64"
+url = "https://github.com/llvm/llvm-project/releases/download/llvmorg-17.0.4/clang%2Bllvm-17.0.4-aarch64-linux-gnu.tar.xz"
+sha256 = "18b326b3e17168fc423726b5059b4d55b6070d49408e51440ad3fca2ebb37779"
+glibc_version = "2.34"
+
+[[toolchains.ingots]]
+platform = "linux"
+arch = "x86_64"
+url = "https://github.com/llvm/llvm-project/releases/download/llvmorg-17.0.4/clang%2Bllvm-17.0.4-x86_64-linux-gnu-ubuntu-22.04.tar.xz"
+sha256 = "6b45be6c0483b7ee3f63981678093b731fd9f4ea6987b4ceb6efde21890ffca7"
+glibc_version = "2.34"
+
+[[toolchains]]
+family = "llvm"
+version = "17.0.5"
+status = "active"
+license = "Apache-2.0 WITH LLVM-exception"
+source_type = "fetch"
+compiler = "clang"
+origin = "upstream"
+
+[[toolchains.ingots]]
+platform = "darwin"
+arch = "aarch64"
+url = "https://github.com/llvm/llvm-project/releases/download/llvmorg-17.0.5/clang%2Bllvm-17.0.5-arm64-apple-darwin22.0.tar.xz"
+sha256 = "6c9aa227800d30d39c28dadbd72c15442e0d9b6813efb2aaa66a478630b7f0c6"
+
+[[toolchains.ingots]]
+platform = "linux"
+arch = "aarch64"
+url = "https://github.com/llvm/llvm-project/releases/download/llvmorg-17.0.5/clang%2Bllvm-17.0.5-aarch64-linux-gnu.tar.xz"
+sha256 = "ee12126c404d42a0723ff3a4449470b5570fe5ce610be9d9baee88a6d27701d2"
+glibc_version = "2.34"
+
+[[toolchains.ingots]]
+platform = "linux"
+arch = "x86_64"
+url = "https://github.com/llvm/llvm-project/releases/download/llvmorg-17.0.5/clang%2Bllvm-17.0.5-x86_64-linux-gnu-ubuntu-22.04.tar.xz"
+sha256 = "5a3cedecd8e2e8663e84bec2f8e5522b8ea097f4a8b32637386f27ac1ca01818"
+glibc_version = "2.34"
+
+[[toolchains]]
+family = "llvm"
+version = "17.0.6"
+status = "active"
+license = "Apache-2.0 WITH LLVM-exception"
+source_type = "fetch"
+compiler = "clang"
+origin = "upstream"
+
+[[toolchains.ingots]]
+platform = "darwin"
+arch = "aarch64"
+url = "https://github.com/llvm/llvm-project/releases/download/llvmorg-17.0.6/clang%2Bllvm-17.0.6-arm64-apple-darwin22.0.tar.xz"
+sha256 = "1264eb3c2a4a6d5e9354c3e5dc5cb6c6481e678f6456f36d2e0e566e9400fcad"
+
+[[toolchains.ingots]]
+platform = "linux"
+arch = "aarch64"
+url = "https://github.com/llvm/llvm-project/releases/download/llvmorg-17.0.6/clang%2Bllvm-17.0.6-aarch64-linux-gnu.tar.xz"
+sha256 = "6dd62762285326f223f40b8e4f2864b5c372de3f7de0731cb7cd55ca5287b75a"
+glibc_version = "2.34"
+
+[[toolchains.ingots]]
+platform = "linux"
+arch = "x86_64"
+url = "https://github.com/llvm/llvm-project/releases/download/llvmorg-17.0.6/clang%2Bllvm-17.0.6-x86_64-linux-gnu-ubuntu-22.04.tar.xz"
+sha256 = "884ee67d647d77e58740c1e645649e29ae9e8a6fe87c1376be0f3a30f3cc9ab3"
+glibc_version = "2.34"
 
 [[toolchains]]
 family = "llvm"
