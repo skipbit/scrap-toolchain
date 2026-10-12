@@ -218,6 +218,7 @@ if [[ "$COMPILE_EXIT" -ne 0 ]]; then
     fail_msg "Compilation failed (exit code: ${COMPILE_EXIT})"
     if [[ -n "$COMPILE_OUTPUT" ]]; then
         echo "  --- compiler output ---"
+        # shellcheck disable=SC2001  # indents every line of the output
         echo "$COMPILE_OUTPUT" | sed 's/^/  /'
         echo "  ---"
     fi
@@ -307,4 +308,3 @@ echo ""
 # --- Summary ---
 echo -e "${BOLD}Summary${RESET}"
 echo -e "  ${GREEN}Smoke test passed.${RESET}"
-exit 0

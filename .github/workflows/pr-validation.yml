@@ -264,9 +264,11 @@ jobs:
             FETCH_MATRIX='{"include":[]}'
           fi
 
-          echo "has_fetch_targets=${HAS_FETCH}" >> "$GITHUB_OUTPUT"
-          echo "has_build_targets=${HAS_BUILD}" >> "$GITHUB_OUTPUT"
-          echo "fetch_matrix=${FETCH_MATRIX}" >> "$GITHUB_OUTPUT"
+          {
+            echo "has_fetch_targets=${HAS_FETCH}"
+            echo "has_build_targets=${HAS_BUILD}"
+            echo "fetch_matrix=${FETCH_MATRIX}"
+          } >> "$GITHUB_OUTPUT"
 
           if [[ "$HAS_BUILD" == "true" ]]; then
             BUILD_JSON=$(printf '%s\n' "${BUILD_MOLDS[@]}" | jq -R -s -c 'split("\n") | map(select(. != ""))')

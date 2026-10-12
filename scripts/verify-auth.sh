@@ -88,8 +88,6 @@ echo ""
 # --- Check 2: Branch protection rules ---
 echo -e "${BOLD}2. Branch protection for '$PROTECTED_BRANCH'${RESET}"
 
-BRANCH_PROTECTED=false
-
 # Try legacy branch protection API first with proper HTTP status handling
 BP_RESPONSE=$(gh api "repos/$REPO/branches/$PROTECTED_BRANCH/protection" \
     --include 2>/dev/null || true)
@@ -100,7 +98,6 @@ BP_JSON=$(echo "$BP_RESPONSE" | sed '1,/^\r*$/d')
 
 if [[ "$BP_HTTP_STATUS" =~ ^2 ]]; then
     # Legacy branch protection is configured
-    BRANCH_PROTECTED=true
     pass "Branch protection is enabled for '$PROTECTED_BRANCH' (legacy rules)"
 
     # Check require PR reviews
@@ -168,7 +165,6 @@ elif [[ "$BP_HTTP_STATUS" == "404" ]]; then
             fail "Rulesets exist but none target '$PROTECTED_BRANCH' or are actively enforced"
         else
             pass "Branch protection is enabled for '$PROTECTED_BRANCH' (rulesets)"
-            BRANCH_PROTECTED=true
 
             # Check each matching ruleset for pull_request rule
             PR_REVIEW_FOUND=false
@@ -273,8 +269,6 @@ echo ""
 
 # --- Check 4: Default GITHUB_TOKEN permissions ---
 echo -e "${BOLD}4. Repository workflow permissions${RESET}"
-
-REPO_SETTINGS=$(gh api "repos/$REPO" --jq '.permissions' 2>/dev/null || echo "{}")
 
 # Check default workflow permissions via Actions settings
 ACTIONS_PERMS=$(gh api "repos/$REPO/actions/permissions/workflow" 2>/dev/null || echo "")

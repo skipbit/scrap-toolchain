@@ -1,0 +1,82 @@
+name: Lint
+
+on:
+  pull_request:
+    paths:
+      - 'scripts/**'
+      - '.github/workflows/**'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: lint-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+env:
+  SHELLCHECK_VERSION: '0.11.0'
+  SHELLCHECK_SHA256: '8c3be12b05d5c177a04c29e3c78ce89ac86f1595681cab149b65b97c4e227198'
+  ACTIONLINT_VERSION: '1.7.12'
+  ACTIONLINT_SHA256: '8aca8db96f1b94770f1b0d72b6dddcb1ebb8123cb3712530b08cc387b349a3d8'
+
+jobs:
+  lint:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - name: Install shellcheck and actionlint
+        run: |
+          set -euo pipefail
+          BIN_DIR="${RUNNER_TEMP}/lint-bin"
+          mkdir -p "$BIN_DIR"
+          cd "$RUNNER_TEMP"
+
+          SHELLCHECK_TAR="shellcheck-v${SHELLCHECK_VERSION}.linux.x86_64.tar.xz"
+          curl -fsSL --retry 3 -o "$SHELLCHECK_TAR" \
+            "https://github.com/koalaman/shellcheck/releases/download/v${SHELLCHECK_VERSION}/${SHELLCHECK_TAR}"
+          echo "${SHELLCHECK_SHA256}  ${SHELLCHECK_TAR}" | sha256sum -c -
+          tar -xJf "$SHELLCHECK_TAR"
+          mv "shellcheck-v${SHELLCHECK_VERSION}/shellcheck" "$BIN_DIR/"
+
+          ACTIONLINT_TAR="actionlint_${ACTIONLINT_VERSION}_linux_amd64.tar.gz"
+          curl -fsSL --retry 3 -o "$ACTIONLINT_TAR" \
+            "https://github.com/rhysd/actionlint/releases/download/v${ACTIONLINT_VERSION}/${ACTIONLINT_TAR}"
+          echo "${ACTIONLINT_SHA256}  ${ACTIONLINT_TAR}" | sha256sum -c -
+          tar -xzf "$ACTIONLINT_TAR" -C "$BIN_DIR" actionlint
+
+          echo "$BIN_DIR" >> "$GITHUB_PATH"
+
+      - name: shellcheck
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        run: |
+          set -euo pipefail
+          shellcheck --version
+
+          # SC2254 in cast-ingot.sh is excluded only while a pull request
+          # leaves the file alone: any change to it rebuilds every ingot,
+          # so the warnings are fixed together with the next change.
+          CHANGED_FILES=$(git diff --name-only "$BASE_SHA" HEAD)
+          EXCLUDE=()
+          if ! grep -qx 'scripts/cast-ingot.sh' <<< "$CHANGED_FILES"; then
+            EXCLUDE=(--exclude=SC2254)
+          fi
+
+          OTHER_SCRIPTS=()
+          for f in scripts/*.sh; do
+            [[ "$f" == scripts/cast-ingot.sh ]] || OTHER_SCRIPTS+=("$f")
+          done
+
+          RC=0
+          shellcheck "${OTHER_SCRIPTS[@]}" || RC=1
+          shellcheck "${EXCLUDE[@]}" scripts/cast-ingot.sh || RC=1
+          exit "$RC"
+
+      - name: actionlint
+        run: |
+          set -euo pipefail
+          actionlint --version
+          actionlint
