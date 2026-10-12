@@ -153,6 +153,11 @@ copy_license_files() {
     local entry="$1" source="$2" dest="$3" lic
     while IFS= read -r lic; do
         [[ -n "$lic" ]] || continue
+        if [[ "$lic" == /* || "$lic" == ../* || "$lic" == */../* || \
+              "$lic" == */.. || "$lic" == .. ]]; then
+            fail "License file path contains traversal or is absolute: ${lic}"
+            return 2
+        fi
         if [[ ! -f "${source}/${lic}" ]]; then
             fail "License file not found: ${source}/${lic}"
             return 2
@@ -1192,9 +1197,11 @@ elif [[ "$SOURCE_TYPE" == "build" ]]; then
 
         pass "Make install succeeded"
 
-        # Where both install the same file, the main build's copy stays.
+        # Where both install the same file (e.g., share/info/dir), the main
+        # build's copy stays.
         if [[ -d "${COMPANIONS_ROOT}${INSTALL_PREFIX}" ]]; then
-            cp -an "${COMPANIONS_ROOT}${INSTALL_PREFIX}/." "${STAGING_DIR}/"
+            tar -cf - -C "${COMPANIONS_ROOT}${INSTALL_PREFIX}" . \
+                | tar -xf - --skip-old-files -C "$STAGING_DIR"
             pass "Companions merged"
         fi
         echo ""

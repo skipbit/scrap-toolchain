@@ -604,12 +604,14 @@ jobs:
 
       # The package stage's smoke test runs in the build container, which
       # has the build's tools and libraries installed. This runs it again
-      # where they are absent.
+      # where they are absent: in the build image, and in the latest
+      # Ubuntu LTS, which lacks libraries the build image happens to have.
       - name: Smoke test in a minimal container
         if: matrix.container != ''
         env:
           MOLD: ${{ matrix.mold }}
           CONTAINER: ${{ matrix.container }}
+          LATEST_IMAGE: ubuntu:24.04
         run: |
           set -euo pipefail
           mapfile -t INGOTS < <(find "${RUNNER_TEMP}/output" -name '*.tar.xz' -type f)
@@ -621,6 +623,9 @@ jobs:
           mkdir -p "$INGOT_DIR"
           tar -xJf "${INGOTS[0]}" -C "$INGOT_DIR"
           scripts/smoke-test-minimal.sh "$INGOT_DIR" "$MOLD" "$CONTAINER"
+          if [[ "$LATEST_IMAGE" != "$CONTAINER" ]]; then
+            scripts/smoke-test-minimal.sh "$INGOT_DIR" "$MOLD" "$LATEST_IMAGE"
+          fi
 
       - name: Upload ingot artifact
         uses: actions/upload-artifact@v7

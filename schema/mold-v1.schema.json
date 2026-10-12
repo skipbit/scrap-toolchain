@@ -330,7 +330,10 @@
         },
         "license_files": {
           "type": "array",
-          "items": { "type": "string" },
+          "items": {
+            "type": "string",
+            "pattern": "^(?!/)(?!\\.\\.(/|$))(?!.*/\\.\\.(/|$)).+$"
+          },
           "description": "License files, relative to the extracted source, copied into licenses/<path>/ in the ingot"
         }
       }
@@ -362,7 +365,10 @@
         },
         "license_files": {
           "type": "array",
-          "items": { "type": "string" },
+          "items": {
+            "type": "string",
+            "pattern": "^(?!/)(?!\\.\\.(/|$))(?!.*/\\.\\.(/|$)).+$"
+          },
           "description": "License files, relative to the extracted source, copied into licenses/<name>/ in the ingot"
         }
       }

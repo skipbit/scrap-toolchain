@@ -427,20 +427,41 @@ jobs:
           chmod +x scripts/validate-mold.sh
           scripts/validate-mold.sh "$MOLD"
 
-      # Runs Ingot Cast's configure stage, so that the pull request takes
-      # the path the build takes after merging: in-tree sources, companions
-      # and configure.
+      # Runs Ingot Cast's configure stage in the container Ingot Cast uses
+      # for linux-x86_64, so that the pull request takes the path the build
+      # takes after merging: in-tree sources, companions and configure.
       - name: Light Build Verification (configure only)
         env:
           MOLD: ${{ matrix.mold }}
+          DEBIAN_FRONTEND: noninteractive
         run: |
-          STAGE_DIR="${RUNNER_TEMP}/stage-artifacts"
-          mkdir -p "$STAGE_DIR"
+          CONTAINER=$(python3 -c "
+          import tomllib
+          with open('platforms.toml', 'rb') as f:
+              tier1 = tomllib.load(f)['platforms']['tier1']
+          print(next(p['container'] for p in tier1
+                     if p['platform'] == 'linux' and p['arch'] == 'x86_64'))
+          ")
+          echo "Container: ${CONTAINER}"
           chmod +x scripts/cast-ingot.sh
-          CAST_STAGE=configure \
-          STAGE_ARTIFACT_DIR="$STAGE_DIR" \
-          WORK_DIR="${RUNNER_TEMP}/cast-ingot" \
-            scripts/cast-ingot.sh "$MOLD" linux x86_64
+          docker run --rm \
+            -v "${GITHUB_WORKSPACE}:/workspace" \
+            -e CAST_STAGE=configure \
+            -e STAGE_ARTIFACT_DIR=/tmp/stage-artifacts \
+            -e DEBIAN_FRONTEND \
+            -e MOLD \
+            -w /workspace \
+            "$CONTAINER" \
+            bash -c '
+              set -euo pipefail
+              apt-get update -qq
+              apt-get install -y -qq --no-install-recommends \
+                sudo ca-certificates curl jq xz-utils \
+                file binutils python3 python3-pip \
+                make patch gcc g++ tar gzip bzip2 m4
+              python3 -c "import tomllib" 2>/dev/null || pip3 install tomli
+              scripts/cast-ingot.sh "$MOLD" linux x86_64
+            '
 
       - name: Post PR comment on failure
         if: failure()
