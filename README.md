@@ -33,7 +33,7 @@ scrap-toolchain/
 ## Mold Types
 
 - **fetch** — References prebuilt binaries from upstream (e.g., LLVM official releases). CI validates the recipe but does not produce artifacts; users download directly from upstream.
-- **build** — Builds from source (e.g., GCC). CI produces ingots and pushes them to `ghcr.io` as OCI artifacts.
+- **build** — Builds from source (e.g., GCC). CI produces ingots and pushes them to `ghcr.io` as OCI artifacts. A build mold can list sources built into the toolchain (`source.build.in_tree`, e.g., GMP, MPFR, MPC and ISL for GCC) and packages installed alongside it (`source.build.companions`, e.g., binutils), so that the ingot runs without the libraries and tools of the machine that built it.
 
 ## Platform Tiers
 
@@ -51,12 +51,13 @@ This repository is licensed under [MIT](LICENSE).
 | Toolchain | License | License Files | Status |
 |-----------|---------|---------------|--------|
 | LLVM/Clang | Apache-2.0 WITH LLVM-exception | `LICENSE.TXT` | Available |
-| GCC | GPL-3.0-or-later WITH GCC-exception-3.1 | `COPYING`, `COPYING.RUNTIME` | Available |
+| GCC | GPL-3.0-or-later WITH GCC-exception-3.1 AND (LGPL-3.0-or-later OR GPL-2.0-or-later) AND LGPL-3.0-or-later AND MIT | `COPYING`, `COPYING.RUNTIME`, and `licenses/` for binutils, GMP, MPFR, MPC and ISL | Available |
 
 ### How licensing works
 
 - **Repository code** (scripts, workflows, schema): MIT
 - **Mold definitions** (`mold.toml`): MIT (as part of the repository)
 - **Distributed ingots**: Each toolchain's own license. The `mold.toml` `metadata.license` field declares the SPDX identifier, and `metadata.license_files` lists the files that must be present in the upstream distribution. `cast-ingot.sh` verifies their presence during validation.
+- **Bundled sources** (`source.build.in_tree` and `source.build.companions`): their own licenses, included in the ingot under `licenses/<name>/` from the `license_files` of each entry, and covered by `metadata.license`.
 
 For contributors adding new molds: ensure `metadata.license` and `metadata.license_files` are accurate for the upstream project. The CI pipeline will fail if specified license files are missing from the upstream distribution.

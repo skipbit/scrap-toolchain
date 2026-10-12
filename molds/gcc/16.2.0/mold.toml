@@ -3,7 +3,7 @@ schema_version = 1
 family = "gcc"
 version = "16.2.0"
 status = "active"
-license = "GPL-3.0-or-later WITH GCC-exception-3.1"
+license = "GPL-3.0-or-later WITH GCC-exception-3.1 AND (LGPL-3.0-or-later OR GPL-2.0-or-later) AND LGPL-3.0-or-later AND MIT"
 license_files = ["COPYING", "COPYING.RUNTIME"]
 homepage = "https://gcc.gnu.org"
 description = "GNU Compiler Collection (GCC)"
@@ -32,8 +32,42 @@ configure_args = [
 ]
 make_args = ["-j$(nproc)"]
 
-[source.build.prerequisites]
-apt = ["libgmp-dev", "libmpfr-dev", "libmpc-dev", "libisl-dev"]
+[[source.build.in_tree]]
+path = "gmp"
+url = "https://gcc.gnu.org/pub/gcc/infrastructure/gmp-6.3.0.tar.bz2"
+sha256 = "ac28211a7cfb609bae2e2c8d6058d66c8fe96434f740cf6fe2e47b000d1c20cb"
+license_files = ["COPYING.LESSERv3", "COPYINGv2", "COPYINGv3"]
+
+[[source.build.in_tree]]
+path = "mpfr"
+url = "https://gcc.gnu.org/pub/gcc/infrastructure/mpfr-4.2.2.tar.bz2"
+sha256 = "9ad62c7dc910303cd384ff8f1f4767a655124980bb6d8650fe62c815a231bb7b"
+license_files = ["COPYING.LESSER", "COPYING"]
+
+[[source.build.in_tree]]
+path = "mpc"
+url = "https://gcc.gnu.org/pub/gcc/infrastructure/mpc-1.3.1.tar.gz"
+sha256 = "ab642492f5cf882b74aa0cb730cd410a81edcdbec895183ce930e706c1c759b8"
+license_files = ["COPYING.LESSER"]
+
+[[source.build.in_tree]]
+path = "isl"
+url = "https://gcc.gnu.org/pub/gcc/infrastructure/isl-0.24.tar.bz2"
+sha256 = "fcf78dd9656c10eb8cf9fbd5f59a0b6b01386205fe1934b3b287a0a1898145c0"
+license_files = ["LICENSE"]
+
+[[source.build.companions]]
+name = "binutils"
+url = "https://ftp.gnu.org/gnu/binutils/binutils-2.47.tar.xz"
+sha256 = "154ab23b60070e8f27013c22977f1129425d67d1e8acd6e13010e617811e4cff"
+configure_args = [
+    "--disable-nls",
+    "--disable-werror",
+    "--disable-gprofng",
+    "--without-zstd",
+    "--without-debuginfod",
+]
+license_files = ["COPYING3", "COPYING3.LIB"]
 
 [test]
 hello_world_source = """

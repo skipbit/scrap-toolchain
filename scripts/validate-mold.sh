@@ -280,8 +280,10 @@ if [[ "$SOURCE_TYPE" == "fetch" ]]; then
         [[ -n "$BF_URL" ]] && URLS_TO_CHECK+=("$BF_URL")
     fi
 elif [[ "$SOURCE_TYPE" == "build" ]]; then
-    BUILD_URL=$(jq -r '.source.build.source_url // empty' "$MOLD_JSON_FILE")
-    [[ -n "$BUILD_URL" ]] && URLS_TO_CHECK+=("$BUILD_URL")
+    while IFS= read -r url; do
+        [[ -n "$url" ]] && URLS_TO_CHECK+=("$url")
+    done < <(jq -r '.source.build | .source_url // empty,
+        (.in_tree[]?, .companions[]? | .url)' "$MOLD_JSON_FILE")
 fi
 
 if [[ ${#URLS_TO_CHECK[@]} -eq 0 ]]; then
@@ -363,26 +365,34 @@ elif [[ "$SOURCE_TYPE" == "build" ]]; then
         fail "Missing source_url or source_sha256 for build type"
         add_summary "- :x: SHA256 pre-verification: missing build source fields"
     else
-        info "Downloading source archive for verification..."
-        DL_FILE="${TMPDIR_VALIDATE}/source"
-        set +e
-        curl -fsL --max-time 300 --retry 3 -o "$DL_FILE" "$BUILD_URL" \
-            2>"${TMPDIR_VALIDATE}/dl_stderr"
-        DL_EXIT=$?
-        set -e
-        if [[ "$DL_EXIT" -eq 0 && -f "$DL_FILE" ]]; then
-            ACTUAL_SHA=$(compute_sha256 "$DL_FILE")
-            if [[ "$ACTUAL_SHA" == "$BUILD_SHA" ]]; then
-                pass "SHA256 verified for source archive"
-                add_summary "- :white_check_mark: SHA256 pre-verification: source archive"
+        # "<label> <url> <sha256>" per archive: the source, then the
+        # in-tree sources and companions
+        while read -r label url sha; do
+            info "Downloading ${label} for verification..."
+            DL_FILE="${TMPDIR_VALIDATE}/source"
+            set +e
+            curl -fsL --max-time 300 --retry 3 -o "$DL_FILE" "$url" \
+                2>"${TMPDIR_VALIDATE}/dl_stderr"
+            DL_EXIT=$?
+            set -e
+            if [[ "$DL_EXIT" -eq 0 && -f "$DL_FILE" ]]; then
+                ACTUAL_SHA=$(compute_sha256 "$DL_FILE")
+                if [[ "$ACTUAL_SHA" == "$sha" ]]; then
+                    pass "SHA256 verified for ${label}"
+                    add_summary "- :white_check_mark: SHA256 pre-verification: ${label}"
+                else
+                    fail "SHA256 mismatch for ${label}: expected=${sha} actual=${ACTUAL_SHA}"
+                    add_summary "- :x: SHA256 mismatch for ${label}"
+                fi
             else
-                fail "SHA256 mismatch: expected=${BUILD_SHA} actual=${ACTUAL_SHA}"
-                add_summary "- :x: SHA256 mismatch for source archive"
+                fail "Download failed: ${url}"
+                add_summary "- :x: SHA256 pre-verification: download failed for ${label}"
             fi
-        else
-            fail "Download failed: ${BUILD_URL}"
-            add_summary "- :x: SHA256 pre-verification: download failed"
-        fi
+            rm -f "$DL_FILE"
+        done < <(jq -r '.source.build |
+            "source-archive \(.source_url) \(.source_sha256)",
+            (.in_tree[]? | "in-tree:\(.path) \(.url) \(.sha256)"),
+            (.companions[]? | "companion:\(.name) \(.url) \(.sha256)")' "$MOLD_JSON_FILE")
     fi
 else
     warn "Unknown source type: ${SOURCE_TYPE}"

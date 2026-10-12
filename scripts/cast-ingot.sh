@@ -120,6 +120,53 @@ compute_sha256() {
     fi
 }
 
+# Downloads <url>, verifies it against <sha256> and extracts it into <dest>
+# without the archive's top directory.
+fetch_source() {
+    local url="$1" sha="$2" dest="$3" file attempt actual
+    file="${RUN_DIR}/$(basename "${url%%\?*}")"
+    for attempt in $(seq 1 "$MAX_DL_RETRIES"); do
+        curl -fsSL --max-time 600 -o "$file" "$url" && break
+        if [[ "$attempt" -eq "$MAX_DL_RETRIES" ]]; then
+            fail "Download failed after ${MAX_DL_RETRIES} attempts: ${url}"
+            return 2
+        fi
+        warn "Download attempt ${attempt}/${MAX_DL_RETRIES} failed: ${url}"
+        sleep 5
+    done
+    actual=$(compute_sha256 "$file")
+    if [[ "$actual" != "$sha" ]]; then
+        fail "SHA256 mismatch for ${url}: expected=${sha} actual=${actual}"
+        return 2
+    fi
+    mkdir -p "$dest"
+    if ! tar -xf "$file" --strip-components=1 -C "$dest"; then
+        fail "Cannot extract ${url}"
+        return 2
+    fi
+    rm -f "$file"
+}
+
+# Copies the license_files listed under the mold entry <jq-path> from
+# <source> into <dest>, keeping their relative paths.
+copy_license_files() {
+    local entry="$1" source="$2" dest="$3" lic
+    while IFS= read -r lic; do
+        [[ -n "$lic" ]] || continue
+        if [[ "$lic" == /* || "$lic" == ../* || "$lic" == */../* || \
+              "$lic" == */.. || "$lic" == .. ]]; then
+            fail "License file path contains traversal or is absolute: ${lic}"
+            return 2
+        fi
+        if [[ ! -f "${source}/${lic}" ]]; then
+            fail "License file not found: ${source}/${lic}"
+            return 2
+        fi
+        mkdir -p "$(dirname "${dest}/${lic}")"
+        cp "${source}/${lic}" "${dest}/${lic}"
+    done < <(jq -r "${entry}.license_files // [] | .[]" "$MOLD_JSON")
+}
+
 # Install build prerequisites from mold.toml.
 # Called in every stage (configure, make, package) because each CI
 # stage uses a separate container that starts without mold-specific
@@ -691,6 +738,16 @@ elif [[ "$SOURCE_TYPE" == "build" ]]; then
     BUILD_DIR="${BASE_WORK_DIR}/build"
     DESTDIR_ROOT="${BASE_WORK_DIR}/destdir"
     STAGING_DIR="${DESTDIR_ROOT}${INSTALL_PREFIX}"
+    COMPANIONS_DIR="${BASE_WORK_DIR}/companions"
+    COMPANIONS_ROOT="${COMPANIONS_DIR}/root"
+
+    # The main build finds the companions before the container's tools, so
+    # that its configure detects what they support.
+    use_companions() {
+        if [[ -d "${COMPANIONS_ROOT}${INSTALL_PREFIX}/bin" ]]; then
+            export PATH="${COMPANIONS_ROOT}${INSTALL_PREFIX}/bin:${PATH}"
+        fi
+    }
 
     # =====================================================================
     # Stage 1: Configure (Steps 2-7)
@@ -701,7 +758,7 @@ elif [[ "$SOURCE_TYPE" == "build" ]]; then
     if in_stage configure; then
 
         # Clean previous build state for a fresh start
-        rm -rf "$SOURCE_DIR" "$BUILD_DIR" "$DESTDIR_ROOT"
+        rm -rf "$SOURCE_DIR" "$BUILD_DIR" "$DESTDIR_ROOT" "$COMPANIONS_DIR"
 
         # --- Step 2: Download source archive ---
         echo -e "${BOLD}2. Download source archive${RESET}"
@@ -778,6 +835,24 @@ elif [[ "$SOURCE_TYPE" == "build" ]]; then
 
         pass "Extracted to ${SOURCE_DIR}"
         echo ""
+
+        # --- Step 4b: Extract in-tree sources ---
+        IN_TREE_COUNT=$(jq '.source.build.in_tree // [] | length' "$MOLD_JSON")
+        if [[ "$IN_TREE_COUNT" -gt 0 ]]; then
+            echo -e "${BOLD}4b. Extract in-tree sources${RESET}"
+            for idx in $(seq 0 $((IN_TREE_COUNT - 1))); do
+                IT_PATH=$(jq -r ".source.build.in_tree[$idx].path" "$MOLD_JSON")
+                IT_URL=$(jq -r ".source.build.in_tree[$idx].url" "$MOLD_JSON")
+                IT_SHA=$(jq -r ".source.build.in_tree[$idx].sha256" "$MOLD_JSON")
+                if [[ -e "${SOURCE_DIR}/${IT_PATH}" ]]; then
+                    fail "In-tree path already exists in the source: ${IT_PATH}"
+                    exit 2
+                fi
+                fetch_source "$IT_URL" "$IT_SHA" "${SOURCE_DIR}/${IT_PATH}" || exit $?
+                pass "${IT_PATH}: $(basename "${IT_URL%%\?*}")"
+            done
+            echo ""
+        fi
 
         # --- Step 5: Apply patches ---
         echo -e "${BOLD}5. Apply patches${RESET}"
@@ -905,6 +980,54 @@ elif [[ "$SOURCE_TYPE" == "build" ]]; then
         fi
         echo ""
 
+        # --- Step 6c: Build companions ---
+        COMPANION_COUNT=$(jq '.source.build.companions // [] | length' "$MOLD_JSON")
+        if [[ "$COMPANION_COUNT" -gt 0 ]]; then
+            echo -e "${BOLD}6c. Build companions${RESET}"
+            for idx in $(seq 0 $((COMPANION_COUNT - 1))); do
+                C_NAME=$(jq -r ".source.build.companions[$idx].name" "$MOLD_JSON")
+                C_URL=$(jq -r ".source.build.companions[$idx].url" "$MOLD_JSON")
+                C_SHA=$(jq -r ".source.build.companions[$idx].sha256" "$MOLD_JSON")
+                C_ARGS=()
+                while IFS= read -r _arg; do
+                    [[ -n "$_arg" ]] && C_ARGS+=("$_arg")
+                done < <(jq -r ".source.build.companions[$idx].configure_args // [] | .[]" "$MOLD_JSON")
+
+                C_SOURCE="${COMPANIONS_DIR}/${C_NAME}/source"
+                C_BUILD="${COMPANIONS_DIR}/${C_NAME}/build"
+                fetch_source "$C_URL" "$C_SHA" "$C_SOURCE" || exit $?
+                mkdir -p "$C_BUILD"
+
+                C_LOG="${RUN_DIR}/companion-${C_NAME}.log"
+                set +e
+                (
+                    cd "$C_BUILD"
+                    "${C_SOURCE}/configure" --prefix="$INSTALL_PREFIX" "${C_ARGS[@]}" &&
+                        make "${MAKE_ARGS[@]}" &&
+                        make install DESTDIR="$COMPANIONS_ROOT"
+                ) > "$C_LOG" 2>&1
+                C_EXIT=$?
+                set -e
+
+                if [[ "$C_EXIT" -ne 0 ]]; then
+                    fail "Companion ${C_NAME} failed (exit code: ${C_EXIT})"
+                    if [[ -n "${STAGE_ARTIFACT_DIR:-}" ]]; then
+                        cp -f "$C_LOG" "${STAGE_ARTIFACT_DIR}/" 2>/dev/null || true
+                    fi
+                    echo "--- Last 50 lines of companion-${C_NAME}.log ---"
+                    tail -50 "$C_LOG"
+                    add_summary "- :x: Companion ${C_NAME} failed"
+                    exit 1
+                fi
+                copy_license_files ".source.build.companions[$idx]" "$C_SOURCE" \
+                    "${COMPANIONS_ROOT}${INSTALL_PREFIX}/licenses/${C_NAME}" || exit $?
+                rm -rf "$C_SOURCE" "$C_BUILD"
+                pass "${C_NAME}: $(basename "${C_URL%%\?*}")"
+            done
+            use_companions
+            echo ""
+        fi
+
         # --- Step 7: Configure ---
         echo -e "${BOLD}7. Configure${RESET}"
 
@@ -967,8 +1090,10 @@ elif [[ "$SOURCE_TYPE" == "build" ]]; then
         # Create stage artifact if in configure-only mode
         if [[ "$CAST_STAGE" == "configure" ]]; then
             echo -e "${BOLD}Creating stage artifact${RESET}"
+            STAGE_TREES=(source build)
+            [[ -d "$COMPANIONS_DIR" ]] && STAGE_TREES+=(companions)
             tar -czf "${STAGE_ARTIFACT_DIR}/configure-tree.tar.gz" \
-                -C "$BASE_WORK_DIR" source build
+                -C "$BASE_WORK_DIR" "${STAGE_TREES[@]}"
             ARTIFACT_SIZE=$(wc -c < "${STAGE_ARTIFACT_DIR}/configure-tree.tar.gz" | tr -d ' ')
             pass "Stage artifact: configure-tree.tar.gz (${ARTIFACT_SIZE} bytes)"
 
@@ -1002,8 +1127,9 @@ elif [[ "$SOURCE_TYPE" == "build" ]]; then
                 fail "Stage artifact not found: ${STAGE_ARTIFACT_DIR}/configure-tree.tar.gz"
                 exit 3
             fi
-            rm -rf "$SOURCE_DIR" "$BUILD_DIR"
+            rm -rf "$SOURCE_DIR" "$BUILD_DIR" "$COMPANIONS_DIR"
             tar -xzf "${STAGE_ARTIFACT_DIR}/configure-tree.tar.gz" -C "$BASE_WORK_DIR"
+            use_companions
             pass "Configure stage artifact loaded"
 
             # Install prerequisites in make stage container
@@ -1070,6 +1196,14 @@ elif [[ "$SOURCE_TYPE" == "build" ]]; then
         fi
 
         pass "Make install succeeded"
+
+        # Where both install the same file (e.g., share/info/dir), the main
+        # build's copy stays.
+        if [[ -d "${COMPANIONS_ROOT}${INSTALL_PREFIX}" ]]; then
+            tar -cf - -C "${COMPANIONS_ROOT}${INSTALL_PREFIX}" . \
+                | tar -xf - --skip-old-files -C "$STAGING_DIR"
+            pass "Companions merged"
+        fi
         echo ""
 
         # Copy license files from source tree to the installed tree.
@@ -1090,6 +1224,16 @@ elif [[ "$SOURCE_TYPE" == "build" ]]; then
                 warn "License file not found in source or install tree: ${LIC_FILE}"
             fi
         done
+        fi
+
+        IN_TREE_COUNT=$(jq '.source.build.in_tree // [] | length' "$MOLD_JSON")
+        if [[ "$IN_TREE_COUNT" -gt 0 ]]; then
+            for idx in $(seq 0 $((IN_TREE_COUNT - 1))); do
+                IT_PATH=$(jq -r ".source.build.in_tree[$idx].path" "$MOLD_JSON")
+                copy_license_files ".source.build.in_tree[$idx]" "${SOURCE_DIR}/${IT_PATH}" \
+                    "${STAGING_DIR}/licenses/${IT_PATH}" || exit $?
+                info "Copied license files of ${IT_PATH}"
+            done
         fi
         echo ""
 

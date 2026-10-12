@@ -427,77 +427,41 @@ jobs:
           chmod +x scripts/validate-mold.sh
           scripts/validate-mold.sh "$MOLD"
 
+      # Runs Ingot Cast's configure stage in the container Ingot Cast uses
+      # for linux-x86_64, so that the pull request takes the path the build
+      # takes after merging: in-tree sources, companions and configure.
       - name: Light Build Verification (configure only)
         env:
-          MOLD_PATH: ${{ matrix.mold }}
+          MOLD: ${{ matrix.mold }}
+          DEBIAN_FRONTEND: noninteractive
         run: |
-          MOLD_JSON=$(mktemp)
-          export MOLD_JSON
-          trap 'rm -f "${MOLD_JSON}"' EXIT
-
-          python3 << 'PYEOF'
-          import tomllib, json, os
-          mold_path = os.environ['MOLD_PATH']
-          mold_json = os.environ['MOLD_JSON']
-          with open(f'{mold_path}/mold.toml', 'rb') as f:
-              data = tomllib.load(f)
-          with open(mold_json, 'w') as out:
-              json.dump(data, out)
-          PYEOF
-
-          SOURCE_URL=$(jq -r '.source.build.source_url' "$MOLD_JSON")
-          SOURCE_SHA=$(jq -r '.source.build.source_sha256' "$MOLD_JSON")
-
-          # Install build prerequisites if specified
-          readarray -t APT_PACKAGES < <(jq -r '.source.build.prerequisites.apt // [] | .[]' "$MOLD_JSON")
-          if [[ ${#APT_PACKAGES[@]} -gt 0 ]]; then
-            sudo apt-get update -qq
-            sudo apt-get install -y -qq "${APT_PACKAGES[@]}"
-          fi
-
-          # Download source archive
-          WORK_DIR=$(mktemp -d)
-          trap 'rm -rf "${WORK_DIR}"; rm -f "${MOLD_JSON}"' EXIT
-
-          echo "Downloading source archive..."
-          curl -fSL --max-time 600 --retry 3 -o "${WORK_DIR}/source.tar" "${SOURCE_URL}"
-
-          # Verify SHA256
-          ACTUAL_SHA=$(sha256sum "${WORK_DIR}/source.tar" | cut -d' ' -f1)
-          if [[ "${ACTUAL_SHA}" != "${SOURCE_SHA}" ]]; then
-            echo "::error::SHA256 mismatch: expected=${SOURCE_SHA} actual=${ACTUAL_SHA}"
-            exit 1
-          fi
-          echo "SHA256 verified"
-
-          # Extract source
-          mkdir -p "${WORK_DIR}/src"
-          tar -xf "${WORK_DIR}/source.tar" --strip-components=1 -C "${WORK_DIR}/src"
-
-          # Configure only (no build)
-          BUILD_DIR="${WORK_DIR}/build"
-          mkdir -p "${BUILD_DIR}"
-
-          readarray -t CONFIG_ARGS < <(jq -r '.source.build.configure_args // [] | .[]' "$MOLD_JSON")
-
-          if [[ -x "${WORK_DIR}/src/configure" ]]; then
-            cd "${BUILD_DIR}"
-            "${WORK_DIR}/src/configure" "${CONFIG_ARGS[@]}" "--prefix=${WORK_DIR}/install"
-          elif [[ -f "${WORK_DIR}/src/CMakeLists.txt" ]]; then
-            cmake -S "${WORK_DIR}/src" -B "${BUILD_DIR}" "${CONFIG_ARGS[@]}" "-DCMAKE_INSTALL_PREFIX=${WORK_DIR}/install"
-          else
-            echo "::error::No configure script or CMakeLists.txt found in source"
-            exit 1
-          fi
-
-          echo "Configure-only verification passed"
-
-          {
-            echo "### Light Build Verification (build type)"
-            echo ""
-            echo "- :white_check_mark: Source SHA256 verified"
-            echo "- :white_check_mark: Configure-only verification passed"
-          } >> "$GITHUB_STEP_SUMMARY"
+          CONTAINER=$(python3 -c "
+          import tomllib
+          with open('platforms.toml', 'rb') as f:
+              tier1 = tomllib.load(f)['platforms']['tier1']
+          print(next(p['container'] for p in tier1
+                     if p['platform'] == 'linux' and p['arch'] == 'x86_64'))
+          ")
+          echo "Container: ${CONTAINER}"
+          chmod +x scripts/cast-ingot.sh
+          docker run --rm \
+            -v "${GITHUB_WORKSPACE}:/workspace" \
+            -e CAST_STAGE=configure \
+            -e STAGE_ARTIFACT_DIR=/tmp/stage-artifacts \
+            -e DEBIAN_FRONTEND \
+            -e MOLD \
+            -w /workspace \
+            "$CONTAINER" \
+            bash -c '
+              set -euo pipefail
+              apt-get update -qq
+              apt-get install -y -qq --no-install-recommends \
+                sudo ca-certificates curl jq xz-utils \
+                file binutils python3 python3-pip \
+                make patch gcc g++ tar gzip bzip2 m4
+              python3 -c "import tomllib" 2>/dev/null || pip3 install tomli
+              scripts/cast-ingot.sh "$MOLD" linux x86_64
+            '
 
       - name: Post PR comment on failure
         if: failure()

@@ -430,7 +430,7 @@ jobs:
                 apt-get install -y -qq --no-install-recommends \
                   sudo ca-certificates curl jq xz-utils \
                   file binutils python3 python3-pip \
-                  make patch gcc g++ tar gzip
+                  make patch gcc g++ tar gzip bzip2 m4
                 python3 -c "import tomllib" 2>/dev/null || pip3 install tomli
                 scripts/cast-ingot.sh "${MOLD_ARG}" "${PLATFORM_ARG}" "${ARCH_ARG}"
               '
@@ -516,7 +516,7 @@ jobs:
                 apt-get install -y -qq --no-install-recommends \
                   sudo ca-certificates curl jq xz-utils \
                   file binutils python3 python3-pip \
-                  make patch gcc g++ tar gzip
+                  make patch gcc g++ tar gzip bzip2 m4
                 python3 -c "import tomllib" 2>/dev/null || pip3 install tomli
                 scripts/cast-ingot.sh "${MOLD_ARG}" "${PLATFORM_ARG}" "${ARCH_ARG}"
               '
@@ -591,7 +591,7 @@ jobs:
                 apt-get install -y -qq --no-install-recommends \
                   sudo ca-certificates curl jq xz-utils \
                   file binutils python3 python3-pip \
-                  make patch gcc g++ tar gzip
+                  make patch gcc g++ tar gzip bzip2 m4
                 python3 -c "import tomllib" 2>/dev/null || pip3 install tomli
                 scripts/cast-ingot.sh "${MOLD_ARG}" "${PLATFORM_ARG}" "${ARCH_ARG}"
               '
@@ -600,6 +600,31 @@ jobs:
             STAGE_ARTIFACT_DIR="${STAGE_DIR}" \
             OUTPUT_DIR="${OUTPUT_DIR}" \
               scripts/cast-ingot.sh "${MOLD}" "${PLATFORM}" "${ARCH}"
+          fi
+
+      # The package stage's smoke test runs in the build container, which
+      # has the build's tools and libraries installed. This runs it again
+      # where they are absent: in the build image, and in the latest
+      # Ubuntu LTS, which lacks libraries the build image happens to have.
+      - name: Smoke test in a minimal container
+        if: matrix.container != ''
+        env:
+          MOLD: ${{ matrix.mold }}
+          CONTAINER: ${{ matrix.container }}
+          LATEST_IMAGE: ubuntu:24.04
+        run: |
+          set -euo pipefail
+          mapfile -t INGOTS < <(find "${RUNNER_TEMP}/output" -name '*.tar.xz' -type f)
+          if [[ ${#INGOTS[@]} -ne 1 ]]; then
+            echo "::error::Expected one ingot archive, found ${#INGOTS[@]}"
+            exit 1
+          fi
+          INGOT_DIR="${RUNNER_TEMP}/minimal-ingot"
+          mkdir -p "$INGOT_DIR"
+          tar -xJf "${INGOTS[0]}" -C "$INGOT_DIR"
+          scripts/smoke-test-minimal.sh "$INGOT_DIR" "$MOLD" "$CONTAINER"
+          if [[ "$LATEST_IMAGE" != "$CONTAINER" ]]; then
+            scripts/smoke-test-minimal.sh "$INGOT_DIR" "$MOLD" "$LATEST_IMAGE"
           fi
 
       - name: Upload ingot artifact
