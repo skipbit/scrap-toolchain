@@ -275,6 +275,16 @@
           "pattern": "^[a-f0-9]{64}$",
           "description": "SHA-256 checksum of the source archive"
         },
+        "in_tree": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/inTreeSource" },
+          "description": "Sources extracted into the source tree before configure, so that the build compiles them in (e.g., GMP, MPFR, MPC and ISL for GCC)"
+        },
+        "companions": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/companion" },
+          "description": "Packages built and installed into the same prefix before the main build (e.g., binutils for GCC)"
+        },
         "configure_args": {
           "type": "array",
           "items": { "type": "string" },
@@ -295,6 +305,65 @@
               "description": "Required apt packages"
             }
           }
+        }
+      }
+    },
+    "inTreeSource": {
+      "type": "object",
+      "required": ["path", "url", "sha256"],
+      "additionalProperties": false,
+      "properties": {
+        "path": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]*$",
+          "description": "Directory in the source root to extract into (e.g., gmp)"
+        },
+        "url": {
+          "type": "string",
+          "format": "uri",
+          "description": "Source archive URL"
+        },
+        "sha256": {
+          "type": "string",
+          "pattern": "^[a-f0-9]{64}$",
+          "description": "SHA-256 checksum of the source archive"
+        },
+        "license_files": {
+          "type": "array",
+          "items": { "type": "string" },
+          "description": "License files, relative to the extracted source, copied into licenses/<path>/ in the ingot"
+        }
+      }
+    },
+    "companion": {
+      "type": "object",
+      "required": ["name", "url", "sha256"],
+      "additionalProperties": false,
+      "properties": {
+        "name": {
+          "type": "string",
+          "pattern": "^[a-z][a-z0-9-]*$",
+          "description": "Package name (e.g., binutils)"
+        },
+        "url": {
+          "type": "string",
+          "format": "uri",
+          "description": "Source archive URL"
+        },
+        "sha256": {
+          "type": "string",
+          "pattern": "^[a-f0-9]{64}$",
+          "description": "SHA-256 checksum of the source archive"
+        },
+        "configure_args": {
+          "type": "array",
+          "items": { "type": "string" },
+          "description": "Arguments for configure step"
+        },
+        "license_files": {
+          "type": "array",
+          "items": { "type": "string" },
+          "description": "License files, relative to the extracted source, copied into licenses/<name>/ in the ingot"
         }
       }
     },
