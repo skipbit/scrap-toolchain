@@ -718,14 +718,6 @@ jobs:
             MOLD_META_FILES["$KEY"]+="${meta_file}"$'\n'
           done
 
-          # Read Tier 1 platform count (default for molds without source.platforms)
-          TIER1_COUNT=$(python3 -c "
-          import tomllib
-          with open('platforms.toml', 'rb') as f:
-              data = tomllib.load(f)
-          print(len(data['platforms']['tier1']))
-          ")
-
           PUSH_COUNT=0
           SKIP_COUNT=0
           FAILURE_COUNT=0
