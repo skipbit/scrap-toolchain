@@ -61,14 +61,16 @@ jobs:
           # so the warnings are fixed together with the next change.
           CHANGED_FILES=$(git diff --name-only "$BASE_SHA" HEAD)
           EXCLUDE=()
-          if ! grep -qx 'scripts/cast-ingot.sh' <<< "$CHANGED_FILES"; then
+          if ! grep -qxF 'scripts/cast-ingot.sh' <<< "$CHANGED_FILES"; then
             EXCLUDE=(--exclude=SC2254)
           fi
 
+          # A git pathspec '*' also matches '/', so nested scripts are included.
+          ALL_SCRIPTS=$(git ls-files 'scripts/*.sh')
           OTHER_SCRIPTS=()
-          for f in scripts/*.sh; do
+          while IFS= read -r f; do
             [[ "$f" == scripts/cast-ingot.sh ]] || OTHER_SCRIPTS+=("$f")
-          done
+          done <<< "$ALL_SCRIPTS"
 
           RC=0
           shellcheck "${OTHER_SCRIPTS[@]}" || RC=1
