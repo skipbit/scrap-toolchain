@@ -49,7 +49,7 @@ Every toolchain uses the C library of the system: glibc at least the `glibc_vers
 - **GCC** ingots carry everything else they need to compile and link, including binutils and the libraries the compiler loads.
 - **LLVM** molds use the upstream release binaries as they are, which also need:
   - the C++ standard library headers (`libstdc++-<N>-dev`)
-  - `libxml2` for LLVM 17 to 22 (except LLVM 17 on aarch64)
+  - `libxml2` for LLVM 17 to 23.1.2 (except LLVM 17 on aarch64)
   - ICU 70 (`libicu70`, packaged in Ubuntu 22.04) for LLVM 23.1.0 to 23.1.2
   - binutils, unless linking with `-fuse-ld=lld`
 
