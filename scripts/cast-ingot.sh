@@ -1047,7 +1047,7 @@ elif [[ "$SOURCE_TYPE" == "build" ]]; then
                         _skip=0
                         for _arg in "${CONFIGURE_ARGS[@]}"; do
                             case "$_arg" in
-                                --with-${_flag_name}=*|--with-${_flag_name}|--without-${_flag_name}|--without-${_flag_name}=*)
+                                --with-"${_flag_name}"=*|--with-"${_flag_name}"|--without-"${_flag_name}"|--without-"${_flag_name}"=*)
                                     _skip=1
                                     break
                                     ;;
