@@ -224,6 +224,37 @@
         "root_dir": {
           "type": "string",
           "description": "Root directory name inside the archive"
+        },
+        "remove_needed": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": { "$ref": "#/$defs/removeNeeded" },
+          "description": "DT_NEEDED entries to remove from ELF files of the archive. CI publishes the result as an ingot instead of pointing to the archive."
+        }
+      },
+      "if": {
+        "properties": { "platform": { "const": "darwin" } },
+        "required": ["platform"]
+      },
+      "then": {
+        "not": { "required": ["remove_needed"] }
+      }
+    },
+    "removeNeeded": {
+      "type": "object",
+      "required": ["file", "library"],
+      "additionalProperties": false,
+      "properties": {
+        "file": {
+          "type": "string",
+          "pattern": "^[^/].*[^/]$",
+          "description": "ELF file path relative to the extracted root"
+        },
+        "library": {
+          "type": "string",
+          "pattern": "^[^/]+$",
+          "description": "Library name in DT_NEEDED to remove (e.g. libatomic.so.1)"
         }
       }
     },
