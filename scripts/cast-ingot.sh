@@ -2,8 +2,10 @@
 # cast-ingot.sh — Build or validate a toolchain mold definition
 #
 # For fetch-type molds: downloads the upstream binary, verifies integrity
-# (SHA256), checks layout, license files, glibc compatibility, and runs
-# a smoke test. No ingot archive is produced.
+# (SHA256), removes the DT_NEEDED entries the binary entry declares,
+# checks layout, license files, glibc compatibility, and runs a smoke
+# test. An ingot archive with metadata is produced only when entries were
+# removed.
 #
 # For build-type molds: downloads source, builds from source, creates an
 # ingot archive (tar.xz) with metadata. Supports 3-stage splitting for
@@ -165,6 +167,65 @@ copy_license_files() {
         mkdir -p "$(dirname "${dest}/${lic}")"
         cp "${source}/${lic}" "${dest}/${lic}"
     done < <(jq -r "${entry}.license_files // [] | .[]" "$MOLD_JSON")
+}
+
+# Writes metadata.toml into STAGING_DIR. Sets BUILT_AT.
+write_metadata_toml() {
+    local source_type="$1"
+    BUILT_AT=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
+    {
+        echo "[metadata]"
+        echo "family = \"${FAMILY}\""
+        echo "version = \"${VERSION}\""
+        echo "platform = \"${PLATFORM}\""
+        echo "arch = \"${ARCH}\""
+        echo "source_type = \"${source_type}\""
+        if [[ -n "$GLIBC_VERSION" ]]; then
+            echo "glibc_version = \"${GLIBC_VERSION}\""
+        fi
+        echo "built_at = \"${BUILT_AT}\""
+    } > "${STAGING_DIR}/metadata.toml"
+    pass "Generated metadata.toml (built_at: ${BUILT_AT})"
+}
+
+# Archives STAGING_DIR as the ingot in OUTPUT_DIR. Sets INGOT_FILENAME,
+# INGOT_SHA and INGOT_SIZE.
+write_ingot_archive() {
+    INGOT_FILENAME="${FAMILY}-${VERSION}-${PLATFORM}-${ARCH}.tar.xz"
+    local ingot_path="${OUTPUT_DIR}/${INGOT_FILENAME}"
+    tar -cJf "$ingot_path" -C "$STAGING_DIR" .
+    INGOT_SHA=$(compute_sha256 "$ingot_path")
+    INGOT_SIZE=$(wc -c < "$ingot_path" | tr -d ' ')
+    pass "Created: ${INGOT_FILENAME} (${INGOT_SIZE} bytes)"
+    info "SHA256: ${INGOT_SHA}"
+}
+
+# Writes the ingot-metadata JSON that the upload and the index read.
+write_ingot_metadata() {
+    local source_type="$1"
+    local metadata_filename="ingot-metadata-${FAMILY}-${VERSION}-${PLATFORM}-${ARCH}.json"
+    jq -n \
+        --arg family "$FAMILY" \
+        --arg version "$VERSION" \
+        --arg platform "$PLATFORM" \
+        --arg arch "$ARCH" \
+        --arg ingot_file "$INGOT_FILENAME" \
+        --arg sha256 "$INGOT_SHA" \
+        --arg source_type "$source_type" \
+        --arg glibc_version "${GLIBC_VERSION:-}" \
+        --arg built_at "$BUILT_AT" \
+        '{
+            family: $family,
+            version: $version,
+            platform: $platform,
+            arch: $arch,
+            ingot_file: $ingot_file,
+            sha256: $sha256,
+            source_type: $source_type,
+            built_at: $built_at
+        } + (if $glibc_version != "" then {glibc_version: $glibc_version} else {} end)' \
+        > "${OUTPUT_DIR}/${metadata_filename}"
+    pass "Written: ${metadata_filename}"
 }
 
 # Install build prerequisites from mold.toml.
@@ -381,7 +442,7 @@ if [[ "$SOURCE_TYPE" == "fetch" ]]; then
         exit 3
     fi
 
-    # --- Fetch type flow (validation only, no ingot produced) ---
+    # --- Fetch type flow (validation; an ingot only with removed entries) ---
 
     # Reject fetch-type molds with patches defined (patches not supported for fetch type)
     PATCHES_COUNT=$(jq '.patches // [] | length' "$MOLD_JSON")
@@ -555,8 +616,32 @@ if [[ "$SOURCE_TYPE" == "fetch" ]]; then
     pass "Layout verified: ${LAYOUT_DIRS[*]}"
     echo ""
 
-    # --- Step 7: License file inclusion ---
-    echo -e "${BOLD}7. License file inclusion${RESET}"
+    # --- Step 7: Remove unused DT_NEEDED entries ---
+    echo -e "${BOLD}7. Remove unused DT_NEEDED entries${RESET}"
+
+    REMOVE_NEEDED=$(echo "$BINARY_ENTRY" | jq -c '.remove_needed // [] | .[]')
+    if [[ -z "$REMOVE_NEEDED" ]]; then
+        info "None declared"
+    else
+        while IFS= read -r entry; do
+            RN_FILE=$(jq -r '.file' <<< "$entry")
+            RN_LIBRARY=$(jq -r '.library' <<< "$entry")
+            set +e
+            "${SCRIPT_DIR}/remove-needed.sh" "$STAGING_DIR" "$RN_FILE" "$RN_LIBRARY"
+            RN_EXIT=$?
+            set -e
+            if [[ "$RN_EXIT" -ne 0 ]]; then
+                fail "Cannot remove ${RN_LIBRARY} from ${RN_FILE}"
+                add_summary "- :x: Cannot remove ${RN_LIBRARY} from ${RN_FILE}"
+                exit "$RN_EXIT"
+            fi
+            pass "Removed ${RN_LIBRARY} from ${RN_FILE}"
+        done <<< "$REMOVE_NEEDED"
+    fi
+    echo ""
+
+    # --- Step 8: License file inclusion ---
+    echo -e "${BOLD}8. License file inclusion${RESET}"
 
     LICENSE_COUNT=$(jq '.metadata.license_files // [] | length' "$MOLD_JSON")
 
@@ -607,11 +692,11 @@ if [[ "$SOURCE_TYPE" == "fetch" ]]; then
     done
     echo ""
 
-    # --- Step 8: glibc compatibility check ---
+    # --- Step 9: glibc compatibility check ---
     # glibc_min is what the index publishes for these binaries, so it must
     # not be lower than what they require. A higher value is only warned
     # about: other architectures of the same mold may require more.
-    echo -e "${BOLD}8. glibc compatibility check${RESET}"
+    echo -e "${BOLD}9. glibc compatibility check${RESET}"
 
     GLIBC_VERSION=""
 
@@ -640,8 +725,8 @@ if [[ "$SOURCE_TYPE" == "fetch" ]]; then
     fi
     echo ""
 
-    # --- Step 9: Smoke test ---
-    echo -e "${BOLD}9. Smoke test${RESET}"
+    # --- Step 10: Smoke test ---
+    echo -e "${BOLD}10. Smoke test${RESET}"
 
     SMOKE_TEST="${SCRIPT_DIR}/smoke-test.sh"
 
@@ -664,6 +749,20 @@ if [[ "$SOURCE_TYPE" == "fetch" ]]; then
     pass "Smoke test passed"
     echo ""
 
+    # --- Step 11: Create ingot (only when entries were removed) ---
+    # The binaries no longer match the upstream archive, so they are
+    # published as an ingot like build-type ones.
+    echo -e "${BOLD}11. Create ingot${RESET}"
+
+    if [[ -z "$REMOVE_NEEDED" ]]; then
+        info "Skipped (upstream archive is used as is)"
+    else
+        write_metadata_toml fetch
+        write_ingot_archive
+        write_ingot_metadata fetch
+    fi
+    echo ""
+
     # --- Fetch Summary ---
     echo -e "${BOLD}Summary${RESET}"
     echo -e "  ${GREEN}Validation passed.${RESET}"
@@ -671,10 +770,17 @@ if [[ "$SOURCE_TYPE" == "fetch" ]]; then
     add_summary ""
     add_summary "- :white_check_mark: SHA256 verified"
     add_summary "- :white_check_mark: Layout verified: ${LAYOUT_DIRS[*]}"
+    if [[ -n "$REMOVE_NEEDED" ]]; then
+        REMOVE_COUNT=$(jq -s 'length' <<< "$REMOVE_NEEDED")
+        add_summary "- :white_check_mark: DT_NEEDED entries removed: ${REMOVE_COUNT}"
+    fi
     if [[ -n "$GLIBC_VERSION" ]]; then
         add_summary "- :white_check_mark: glibc requirement: ${GLIBC_VERSION}"
     fi
     add_summary "- :white_check_mark: Smoke test passed"
+    if [[ -n "$REMOVE_NEEDED" ]]; then
+        add_summary "- :white_check_mark: Ingot: ${INGOT_FILENAME} (${INGOT_SIZE} bytes)"
+    fi
     add_summary ""
     add_summary "**Result: :white_check_mark: Validation passed**"
 
@@ -1364,38 +1470,12 @@ elif [[ "$SOURCE_TYPE" == "build" ]]; then
 
         # --- Step 13: Generate metadata.toml ---
         echo -e "${BOLD}13. Generate metadata.toml${RESET}"
-
-        BUILT_AT=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
-
-        {
-            echo "[metadata]"
-            echo "family = \"${FAMILY}\""
-            echo "version = \"${VERSION}\""
-            echo "platform = \"${PLATFORM}\""
-            echo "arch = \"${ARCH}\""
-            echo "source_type = \"build\""
-            if [[ -n "$GLIBC_VERSION" ]]; then
-                echo "glibc_version = \"${GLIBC_VERSION}\""
-            fi
-            echo "built_at = \"${BUILT_AT}\""
-        } > "${STAGING_DIR}/metadata.toml"
-
-        pass "Generated metadata.toml (built_at: ${BUILT_AT})"
+        write_metadata_toml build
         echo ""
 
         # --- Step 14: Create ingot archive + SHA256 ---
         echo -e "${BOLD}14. Create ingot archive${RESET}"
-
-        INGOT_FILENAME="${FAMILY}-${VERSION}-${PLATFORM}-${ARCH}.tar.xz"
-        INGOT_PATH="${OUTPUT_DIR}/${INGOT_FILENAME}"
-
-        tar -cJf "$INGOT_PATH" -C "$STAGING_DIR" .
-
-        INGOT_SHA=$(compute_sha256 "$INGOT_PATH")
-        INGOT_SIZE=$(wc -c < "$INGOT_PATH" | tr -d ' ')
-
-        pass "Created: ${INGOT_FILENAME} (${INGOT_SIZE} bytes)"
-        info "SHA256: ${INGOT_SHA}"
+        write_ingot_archive
         echo ""
 
         # --- Step 15: Smoke test ---
@@ -1424,32 +1504,7 @@ elif [[ "$SOURCE_TYPE" == "build" ]]; then
 
         # --- Step 16: Output ingot-metadata JSON ---
         echo -e "${BOLD}16. Output ingot metadata${RESET}"
-
-        METADATA_FILENAME="ingot-metadata-${FAMILY}-${VERSION}-${PLATFORM}-${ARCH}.json"
-        METADATA_PATH="${OUTPUT_DIR}/${METADATA_FILENAME}"
-
-        jq -n \
-            --arg family "$FAMILY" \
-            --arg version "$VERSION" \
-            --arg platform "$PLATFORM" \
-            --arg arch "$ARCH" \
-            --arg ingot_file "$INGOT_FILENAME" \
-            --arg sha256 "$INGOT_SHA" \
-            --arg glibc_version "${GLIBC_VERSION:-}" \
-            --arg built_at "$BUILT_AT" \
-            '{
-                family: $family,
-                version: $version,
-                platform: $platform,
-                arch: $arch,
-                ingot_file: $ingot_file,
-                sha256: $sha256,
-                source_type: "build",
-                built_at: $built_at
-            } + (if $glibc_version != "" then {glibc_version: $glibc_version} else {} end)' \
-            > "$METADATA_PATH"
-
-        pass "Written: ${METADATA_FILENAME}"
+        write_ingot_metadata build
         echo ""
 
         # --- Build Summary ---
