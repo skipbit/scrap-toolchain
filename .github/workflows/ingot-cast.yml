@@ -750,6 +750,26 @@ jobs:
               scripts/cast-ingot.sh "${MOLD_ARG}" "${PLATFORM_ARG}" "${ARCH_ARG}"
             '
 
+      - name: Smoke test libc++ in a minimal container
+        if: matrix.family == 'llvm'
+        env:
+          CONTAINER: ${{ matrix.container }}
+          LATEST_IMAGE: ubuntu:24.04
+        run: |
+          set -euo pipefail
+          mapfile -t INGOTS < <(find "${RUNNER_TEMP}/output" -name '*.tar.xz' -type f)
+          if [[ ${#INGOTS[@]} -ne 1 ]]; then
+            echo "::error::Expected one ingot archive, found ${#INGOTS[@]}"
+            exit 1
+          fi
+          INGOT_DIR="${RUNNER_TEMP}/minimal-ingot"
+          mkdir -p "$INGOT_DIR"
+          tar -xJf "${INGOTS[0]}" -C "$INGOT_DIR"
+          scripts/smoke-test-libcxx.sh "$INGOT_DIR" "$CONTAINER"
+          if [[ "$LATEST_IMAGE" != "$CONTAINER" ]]; then
+            scripts/smoke-test-libcxx.sh "$INGOT_DIR" "$LATEST_IMAGE"
+          fi
+
       - name: Upload ingot artifact
         uses: actions/upload-artifact@v7
         with:
