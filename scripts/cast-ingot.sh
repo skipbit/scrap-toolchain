@@ -23,6 +23,8 @@
 #                        Unset or empty runs all stages sequentially.
 #   STAGE_ARTIFACT_DIR — Directory for intermediate stage artifacts.
 #                        Required when CAST_STAGE is set.
+#   CAST_FETCH_INGOT   — 0 skips creating the ingot of a fetch-type mold
+#                        with removed entries (validation only). Default: 1.
 #
 # Exit codes:
 #   0 = Success (validation passed / ingot created)
@@ -41,6 +43,7 @@ BASE_WORK_DIR="${WORK_DIR:-/tmp/cast-ingot}"
 OUTPUT_DIR="${OUTPUT_DIR:-./output}"
 CAST_STAGE="${CAST_STAGE:-}"
 STAGE_ARTIFACT_DIR="${STAGE_ARTIFACT_DIR:-}"
+CAST_FETCH_INGOT="${CAST_FETCH_INGOT:-1}"
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 MAX_DL_RETRIES=3
@@ -75,6 +78,11 @@ if [[ -n "$CAST_STAGE" ]]; then
         exit 3
     fi
     mkdir -p "$STAGE_ARTIFACT_DIR"
+fi
+
+if [[ "$CAST_FETCH_INGOT" != 0 && "$CAST_FETCH_INGOT" != 1 ]]; then
+    echo "Error: Invalid CAST_FETCH_INGOT value: ${CAST_FETCH_INGOT} (0 or 1)"
+    exit 3
 fi
 
 # Returns true if the current execution should include the given stage.
@@ -754,12 +762,16 @@ if [[ "$SOURCE_TYPE" == "fetch" ]]; then
     # published as an ingot like build-type ones.
     echo -e "${BOLD}11. Create ingot${RESET}"
 
+    INGOT_CREATED=false
     if [[ -z "$REMOVE_NEEDED" ]]; then
         info "Skipped (upstream archive is used as is)"
+    elif [[ "$CAST_FETCH_INGOT" == 0 ]]; then
+        info "Skipped (CAST_FETCH_INGOT=0)"
     else
         write_metadata_toml fetch
         write_ingot_archive
         write_ingot_metadata fetch
+        INGOT_CREATED=true
     fi
     echo ""
 
@@ -778,7 +790,7 @@ if [[ "$SOURCE_TYPE" == "fetch" ]]; then
         add_summary "- :white_check_mark: glibc requirement: ${GLIBC_VERSION}"
     fi
     add_summary "- :white_check_mark: Smoke test passed"
-    if [[ -n "$REMOVE_NEEDED" ]]; then
+    if [[ "$INGOT_CREATED" == true ]]; then
         add_summary "- :white_check_mark: Ingot: ${INGOT_FILENAME} (${INGOT_SIZE} bytes)"
     fi
     add_summary ""
