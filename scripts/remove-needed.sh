@@ -49,7 +49,8 @@ NEEDED=$(needed_of "$TARGET")
 grep -qxF "$LIBRARY" <<< "$NEEDED" || invalid "${LIBRARY} is not in the DT_NEEDED of ${FILE}"
 
 VERSION_INFO=$(readelf -V -W "$TARGET") || internal "cannot read ${FILE}"
-if grep -qE "File: ${LIBRARY//./\\.}( |$)" <<< "$VERSION_INFO"; then
+if awk -v lib="$LIBRARY" '{ for (i = 1; i < NF; i++) if ($i == "File:" && $(i + 1) == lib) found = 1 }
+        END { exit !found }' <<< "$VERSION_INFO"; then
     invalid "${FILE} requires a symbol version of ${LIBRARY}"
 fi
 
