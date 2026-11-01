@@ -766,10 +766,11 @@ jobs:
           INGOT_DIR="${RUNNER_TEMP}/minimal-ingot"
           mkdir -p "$INGOT_DIR"
           tar -xJf "${INGOTS[0]}" -C "$INGOT_DIR"
-          scripts/smoke-test-libcxx.sh "$INGOT_DIR" "$CONTAINER"
+          RUN_IMAGES=("$CONTAINER")
           if [[ "$LATEST_IMAGE" != "$CONTAINER" ]]; then
-            scripts/smoke-test-libcxx.sh "$INGOT_DIR" "$LATEST_IMAGE"
+            RUN_IMAGES+=("$LATEST_IMAGE")
           fi
+          scripts/smoke-test-libcxx.sh "$INGOT_DIR" "$CONTAINER" "${RUN_IMAGES[@]}"
 
       - name: Upload ingot artifact
         uses: actions/upload-artifact@v7
