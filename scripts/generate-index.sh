@@ -143,7 +143,7 @@ oci_api_call() {
 
         # Re-acquire token on 401 (expired or invalid)
         if [[ "$http_code" == "401" && "$attempt" -lt "$MAX_API_RETRIES" ]]; then
-            warn "OCI API ${repo}/${endpoint} returned 401, re-acquiring token..."
+            warn "OCI API ${repo}/${endpoint} returned 401, re-acquiring token..." >&2
             token=$(oci_get_token "$repo")
             [[ -z "$token" ]] && break
             sleep 1
@@ -157,7 +157,7 @@ oci_api_call() {
         fi
 
         if [[ "$attempt" -lt "$MAX_API_RETRIES" ]]; then
-            warn "OCI API ${repo}/${endpoint} returned HTTP ${http_code}, retry ${attempt}/${MAX_API_RETRIES}..."
+            warn "OCI API ${repo}/${endpoint} returned HTTP ${http_code}, retry ${attempt}/${MAX_API_RETRIES}..." >&2
             sleep 2
         fi
     done
@@ -206,7 +206,7 @@ collect_build_ingots() {
                 )
 
                 if [[ -z "$platform" || -z "$arch" || -z "$digest" ]]; then
-                    warn "Incomplete asset entry in package-manifest (platform=${platform}, arch=${arch}, digest=${digest}); skipping"
+                    warn "Incomplete asset entry in package-manifest (platform=${platform}, arch=${arch}, digest=${digest}); skipping" >&2
                     continue
                 fi
 
@@ -245,7 +245,7 @@ collect_build_ingots() {
             # Verify this is an OCI Index (has .manifests array), not a single manifest.
             # A single-platform manifest has .config + .layers but no .manifests.
             if ! jq -e 'has("manifests")' <<< "$index_manifest" >/dev/null 2>&1; then
-                warn "OCI manifest for ${family}:${version} is not an Index; cannot extract per-platform digests"
+                warn "OCI manifest for ${family}:${version} is not an Index; cannot extract per-platform digests" >&2
             else
             local manifest_count
             manifest_count=$(jq '.manifests | length' <<< "$index_manifest" 2>/dev/null) || manifest_count=0
@@ -276,7 +276,7 @@ collect_build_ingots() {
                           else {} end)' <<< "$index_manifest" 2>/dev/null) || entry=""
 
                 if [[ -z "$entry" ]]; then
-                    warn "Descriptor ${i} of ${family}:${version} has no digest or platform; skipping"
+                    warn "Descriptor ${i} of ${family}:${version} has no digest or platform; skipping" >&2
                     continue
                 fi
 
