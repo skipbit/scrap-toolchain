@@ -201,7 +201,7 @@ write_metadata_toml() {
 write_ingot_archive() {
     INGOT_FILENAME="${FAMILY}-${VERSION}-${PLATFORM}-${ARCH}.tar.xz"
     local ingot_path="${OUTPUT_DIR}/${INGOT_FILENAME}"
-    tar -cJf "$ingot_path" -C "$STAGING_DIR" .
+    XZ_OPT=-T0 tar -cJf "$ingot_path" -C "$STAGING_DIR" .
     INGOT_SHA=$(compute_sha256 "$ingot_path")
     INGOT_SIZE=$(wc -c < "$ingot_path" | tr -d ' ')
     pass "Created: ${INGOT_FILENAME} (${INGOT_SIZE} bytes)"
