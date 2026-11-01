@@ -443,6 +443,7 @@ json.dump(data, sys.stdout)
         continue
     fi
 
+    ingots=$(jq --arg origin "$origin" 'map(. + {origin: $origin})' <<< "$ingots")
     ingot_count=$(jq 'length' <<< "$ingots" 2>/dev/null) || ingot_count=0
 
     if [[ "$ingot_count" -gt 0 ]]; then
@@ -463,7 +464,6 @@ json.dump(data, sys.stdout)
         --arg source_type "$source_type" \
         --arg compiler "$compiler" \
         --arg min_scrap "$min_scrap" \
-        --arg origin "$origin" \
         --argjson ingots "$ingots" \
         '{
             family: $family,
@@ -471,8 +471,7 @@ json.dump(data, sys.stdout)
             status: $status,
             license: $license,
             source_type: $source_type,
-            compiler: $compiler,
-            origin: $origin
+            compiler: $compiler
         }
         + if $min_scrap != "" then {min_scrap_version: $min_scrap} else {} end
         + {ingots: $ingots}')
@@ -528,8 +527,6 @@ for tc in toolchains:
     lines.append(f'license = \"{esc(tc[\"license\"])}\"')
     lines.append(f'source_type = \"{esc(tc[\"source_type\"])}\"')
     lines.append(f'compiler = \"{esc(tc[\"compiler\"])}\"')
-    if tc.get('origin'):
-        lines.append(f'origin = \"{esc(tc[\"origin\"])}\"')
     if tc.get('min_scrap_version'):
         lines.append(f'min_scrap_version = \"{esc(tc[\"min_scrap_version\"])}\"')
 
@@ -540,6 +537,7 @@ for tc in toolchains:
         lines.append('[[toolchains.ingots]]')
         lines.append(f'platform = \"{esc(ingot[\"platform\"])}\"')
         lines.append(f'arch = \"{esc(ingot[\"arch\"])}\"')
+        lines.append(f'origin = \"{esc(ingot[\"origin\"])}\"')
 
         if 'registry' in ingot:
             # Build type: OCI reference (registry + tag + digest)
