@@ -329,7 +329,7 @@ jobs:
           apt-get update -qq
           apt-get install -y -qq \
             ca-certificates curl jq xz-utils file binutils \
-            python3-pip libc6-dev libxml2
+            python3-pip libc6-dev libxml2 patchelf libatomic1
           # Use --break-system-packages only if pip supports it (pip 23+, PEP 668)
           pip3 install tomli jsonschema 2>/dev/null \
             || pip3 install --break-system-packages tomli jsonschema
@@ -366,6 +366,7 @@ jobs:
           PLATFORM: ${{ matrix.platform }}
           ARCH: ${{ matrix.arch }}
           OUTPUT_DIR: ${{ runner.temp }}/fetch-validation-output
+          CAST_FETCH_INGOT: '0'
         run: |
           chmod +x scripts/cast-ingot.sh scripts/smoke-test.sh
           mkdir -p "${OUTPUT_DIR}"

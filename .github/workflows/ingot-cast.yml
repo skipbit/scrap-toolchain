@@ -32,6 +32,8 @@ jobs:
     outputs:
       has_build_targets: ${{ steps.detect.outputs.has_build_targets }}
       build_matrix: ${{ steps.detect.outputs.build_matrix }}
+      has_fetch_targets: ${{ steps.detect.outputs.has_fetch_targets }}
+      fetch_matrix: ${{ steps.detect.outputs.fetch_matrix }}
     steps:
       - uses: actions/checkout@v7
         with:
@@ -56,6 +58,8 @@ jobs:
             {
               echo "has_build_targets=false"
               echo 'build_matrix={"include":[]}'
+              echo "has_fetch_targets=false"
+              echo 'fetch_matrix={"include":[]}'
             } >> "$GITHUB_OUTPUT"
           }
 
@@ -91,15 +95,16 @@ jobs:
 
             # Check for infrastructure changes that affect all molds.
             # Only the files that decide an ingot's content qualify:
-            # cast-ingot.sh is the build, and platforms.toml picks the
-            # container that sets the glibc baseline. The rest affect how
+            # cast-ingot.sh is the build, remove-needed.sh rewrites files
+            # of fetch ingots, and platforms.toml picks the container that
+            # sets the glibc baseline. The rest affect how
             # builds run, not what is built — smoke-test.sh verifies the
             # ingot after it is packed, validate-mold.sh and schema/ belong
             # to pr-validation.yml, and generate-index.sh runs afterwards in
             # index-update.yml. Rebuilding for those would republish a
             # version from a different build for no gain; use
             # workflow_dispatch to rebuild a mold on purpose.
-            INFRA_CHANGED=$(echo "$ALL_CHANGED_FILES" | grep -E '^(platforms\.toml|scripts/cast-ingot\.sh)$' || true)
+            INFRA_CHANGED=$(echo "$ALL_CHANGED_FILES" | grep -E '^(platforms\.toml|scripts/cast-ingot\.sh|scripts/remove-needed\.sh)$' || true)
 
             # Extract mold-specific changes
             MOLD_CHANGED_FILES=$(echo "$ALL_CHANGED_FILES" | grep '^molds/' || true)
@@ -213,11 +218,13 @@ jobs:
           fi
 
           # === Step 2: Classify by source type ===
-          # Fetch-type molds are validated in pr-validation.yml only.
-          # Only build-type molds trigger ingot production here.
+          # Fetch-type molds are validated in pr-validation.yml. Only the
+          # platforms whose binary entry removes DT_NEEDED entries produce
+          # ingots here, since those binaries differ from the upstream ones.
 
-          HAS_BUILD=false
           BUILD_MOLD_DIRS=()
+          FETCH_MOLD_DIRS=()
+          declare -A FETCH_PLATFORM_IDS
 
           for mold in "${CHANGED_MOLDS[@]}"; do
             SOURCE_TYPE=$(MOLD_VAR="$mold" python3 -c "
@@ -231,23 +238,37 @@ jobs:
             echo "Detected: ${mold} (${SOURCE_TYPE})"
 
             if [[ "$SOURCE_TYPE" == "fetch" ]]; then
-              echo "::notice::Fetch type: ${mold} — validated in pr-validation.yml only"
+              CAST_IDS=$(MOLD_VAR="$mold" python3 -c "
+          import tomllib, os
+          mold = os.environ['MOLD_VAR']
+          with open(f'{mold}/mold.toml', 'rb') as f:
+              data = tomllib.load(f)
+          for b in data['source']['binaries']:
+              if b.get('remove_needed'):
+                  print(f\"{b['platform']}-{b['arch']}\")
+          ")
+              if [[ -z "$CAST_IDS" ]]; then
+                echo "::notice::Fetch type: ${mold} — validated in pr-validation.yml only"
+                continue
+              fi
+              FETCH_MOLD_DIRS+=("$mold")
+              FETCH_PLATFORM_IDS["$mold"]="$CAST_IDS"
+              echo "::notice::Fetch type with removed DT_NEEDED entries: ${mold}"
             elif [[ "$SOURCE_TYPE" == "build" ]]; then
-              HAS_BUILD=true
               BUILD_MOLD_DIRS+=("$mold")
               echo "::notice::Build type detected: ${mold}"
             fi
           done
 
-          # === Step 3: Generate build matrix ===
-          # Cross each build-type mold with its supported platforms.
-          # If source.platforms.supported is specified, only those platforms are used.
-          # Otherwise, all Tier 1 platforms from platforms.toml are used.
-          # The matrix is consumed by cast-build-configure/make/package jobs.
+          # === Step 3: Generate matrices ===
+          # Cross each mold with its Tier 1 platforms from platforms.toml.
+          # A build-type mold keeps the platforms in source.platforms.supported
+          # when it is specified; a fetch-type mold keeps the platforms that
+          # remove DT_NEEDED entries. The build matrix is consumed by the
+          # cast-build-configure/make/package jobs, the fetch matrix by
+          # cast-fetch.
 
-          if [[ "$HAS_BUILD" == "true" ]]; then
-            # Read Tier 1 platforms
-            TIER1_PLATFORMS=$(python3 -c "
+          TIER1_PLATFORMS=$(python3 -c "
           import tomllib, json
           with open('platforms.toml', 'rb') as f:
               data = tomllib.load(f)
@@ -255,59 +276,59 @@ jobs:
               print(json.dumps(p))
           ")
 
-            # Read glibc container mapping for container resolution
-            GLIBC_MAP=$(python3 -c "
+          # Read glibc container mapping for container resolution
+          GLIBC_MAP=$(python3 -c "
           import tomllib, json
           with open('platforms.toml', 'rb') as f:
               data = tomllib.load(f)
           print(json.dumps(data.get('glibc_containers', {})))
           ")
 
-            BUILD_ENTRIES=()
+          # Appends to the array named by the third argument one matrix entry
+          # per Tier 1 platform of a mold, limited to the platform IDs given
+          # (one per line, e.g. linux-x86_64) when there are any.
+          add_matrix_entries() {
+            local mold="$1" only="$2"
+            local -n entries="$3"
+            local ENTRY MOLD_META FAMILY VERSION GLIBC_MIN platform_entry PLAT ARCH
+            local PLATFORM_ID RUNNER CONTAINER RESOLVED_CONTAINER
 
-            for mold in "${BUILD_MOLD_DIRS[@]}"; do
-              # Read family, version, glibc_min from mold.toml
-              MOLD_META=$(MOLD_VAR="$mold" python3 -c "
+            # Read family, version, glibc_min from mold.toml
+            MOLD_META=$(MOLD_VAR="$mold" python3 -c "
           import tomllib, json, os
           mold = os.environ['MOLD_VAR']
           with open(f'{mold}/mold.toml', 'rb') as f:
               data = tomllib.load(f)
-          supported = data.get('source', {}).get('platforms', {}).get('supported', [])
           print(json.dumps({
               'family': data['metadata']['family'],
               'version': data['metadata']['version'],
-              'glibc_min': data.get('source', {}).get('glibc_min', ''),
-              'supported_platforms': supported
+              'glibc_min': data.get('source', {}).get('glibc_min', '')
           }))
           ")
 
-              FAMILY=$(echo "$MOLD_META" | jq -r '.family')
-              VERSION=$(echo "$MOLD_META" | jq -r '.version')
-              GLIBC_MIN=$(echo "$MOLD_META" | jq -r '.glibc_min')
-              SUPPORTED_PLATFORMS=$(echo "$MOLD_META" | jq -r '.supported_platforms | if length > 0 then .[] else empty end')
+            FAMILY=$(echo "$MOLD_META" | jq -r '.family')
+            VERSION=$(echo "$MOLD_META" | jq -r '.version')
+            GLIBC_MIN=$(echo "$MOLD_META" | jq -r '.glibc_min')
 
-              while IFS= read -r platform_entry; do
-                [[ -z "$platform_entry" ]] && continue
-                PLAT=$(echo "$platform_entry" | jq -r '.platform')
-                ARCH=$(echo "$platform_entry" | jq -r '.arch')
+            while IFS= read -r platform_entry; do
+              [[ -z "$platform_entry" ]] && continue
+              PLAT=$(echo "$platform_entry" | jq -r '.platform')
+              ARCH=$(echo "$platform_entry" | jq -r '.arch')
 
-                # Filter by mold's supported platforms if specified
-                if [[ -n "$SUPPORTED_PLATFORMS" ]]; then
-                  PLATFORM_ID="${PLAT}-${ARCH}"
-                  if ! echo "$SUPPORTED_PLATFORMS" | grep -qx "$PLATFORM_ID"; then
-                    echo "  Skip: ${mold} ${PLATFORM_ID} (not in source.platforms.supported)"
-                    continue
-                  fi
-                fi
-                RUNNER=$(echo "$platform_entry" | jq -r '.runner')
-                CONTAINER=$(echo "$platform_entry" | jq -r '.container // ""')
+              PLATFORM_ID="${PLAT}-${ARCH}"
+              if [[ -n "$only" ]] && ! echo "$only" | grep -qx "$PLATFORM_ID"; then
+                echo "  Skip: ${mold} ${PLATFORM_ID}"
+                continue
+              fi
+              RUNNER=$(echo "$platform_entry" | jq -r '.runner')
+              CONTAINER=$(echo "$platform_entry" | jq -r '.container // ""')
 
-                # Resolve container image for glibc compatibility (Linux only).
-                # When glibc_min is specified, select the smallest glibc container
-                # that satisfies the requirement. Otherwise use the default container
-                # from platforms.toml (typically ubuntu:20.04 = glibc 2.31).
-                if [[ -n "$GLIBC_MIN" && -n "$CONTAINER" && "$PLAT" == "linux" ]]; then
-                  RESOLVED_CONTAINER=$(echo "$GLIBC_MAP" | GLIBC_MIN_VAR="$GLIBC_MIN" python3 -c "
+              # Resolve container image for glibc compatibility (Linux only).
+              # When glibc_min is specified, select the smallest glibc container
+              # that satisfies the requirement. Otherwise use the default container
+              # from platforms.toml (typically ubuntu:20.04 = glibc 2.31).
+              if [[ -n "$GLIBC_MIN" && -n "$CONTAINER" && "$PLAT" == "linux" ]]; then
+                RESOLVED_CONTAINER=$(echo "$GLIBC_MAP" | GLIBC_MIN_VAR="$GLIBC_MIN" python3 -c "
           import json, sys, os
           glibc_min = os.environ['GLIBC_MIN_VAR']
           glibc_map = json.load(sys.stdin)
@@ -326,38 +347,67 @@ jobs:
           else:
               print(default_container)
           ")
-                  CONTAINER="$RESOLVED_CONTAINER"
-                fi
+                CONTAINER="$RESOLVED_CONTAINER"
+              fi
 
-                ENTRY=$(jq -n \
-                  --arg mold "$mold" \
-                  --arg family "$FAMILY" \
-                  --arg version "$VERSION" \
-                  --arg platform "$PLAT" \
-                  --arg arch "$ARCH" \
-                  --arg runner "$RUNNER" \
-                  --arg container "$CONTAINER" \
-                  '{mold: $mold, family: $family, version: $version,
-                    platform: $platform, arch: $arch,
-                    runner: $runner, container: $container}')
-                BUILD_ENTRIES+=("$ENTRY")
-                echo "  Matrix: ${mold} ${PLAT}-${ARCH} (runner: ${RUNNER}, container: ${CONTAINER:-native})"
-              done <<< "$TIER1_PLATFORMS"
-            done
+              ENTRY=$(jq -cn \
+                --arg mold "$mold" \
+                --arg family "$FAMILY" \
+                --arg version "$VERSION" \
+                --arg platform "$PLAT" \
+                --arg arch "$ARCH" \
+                --arg runner "$RUNNER" \
+                --arg container "$CONTAINER" \
+                '{mold: $mold, family: $family, version: $version,
+                  platform: $platform, arch: $arch,
+                  runner: $runner, container: $container}')
+              entries+=("$ENTRY")
+              echo "  Matrix: ${mold} ${PLATFORM_ID} (runner: ${RUNNER}, container: ${CONTAINER:-native})"
+            done <<< "$TIER1_PLATFORMS"
+          }
 
-            if [[ ${#BUILD_ENTRIES[@]} -eq 0 ]]; then
-              echo "::warning::Build-type molds detected but no Tier 1 platform entries generated"
-              HAS_BUILD=false
-              BUILD_MATRIX='{"include":[]}'
-            else
-              BUILD_MATRIX=$(printf '%s\n' "${BUILD_ENTRIES[@]}" | jq -cs '{include: .}')
-            fi
-          else
-            BUILD_MATRIX='{"include":[]}'
+          BUILD_ENTRIES=()
+          for mold in "${BUILD_MOLD_DIRS[@]}"; do
+            SUPPORTED_PLATFORMS=$(MOLD_VAR="$mold" python3 -c "
+          import tomllib, os
+          mold = os.environ['MOLD_VAR']
+          with open(f'{mold}/mold.toml', 'rb') as f:
+              data = tomllib.load(f)
+          for p in data.get('source', {}).get('platforms', {}).get('supported', []):
+              print(p)
+          ")
+            add_matrix_entries "$mold" "$SUPPORTED_PLATFORMS" BUILD_ENTRIES
+          done
+
+          FETCH_ENTRIES=()
+          for mold in "${FETCH_MOLD_DIRS[@]}"; do
+            add_matrix_entries "$mold" "${FETCH_PLATFORM_IDS[$mold]}" FETCH_ENTRIES
+          done
+
+          HAS_BUILD=false
+          BUILD_MATRIX='{"include":[]}'
+          if [[ ${#BUILD_ENTRIES[@]} -gt 0 ]]; then
+            HAS_BUILD=true
+            BUILD_MATRIX=$(printf '%s\n' "${BUILD_ENTRIES[@]}" | jq -cs '{include: .}')
+          elif [[ ${#BUILD_MOLD_DIRS[@]} -gt 0 ]]; then
+            echo "::warning::Build-type molds detected but no Tier 1 platform entries generated"
           fi
 
-          echo "has_build_targets=${HAS_BUILD}" >> "$GITHUB_OUTPUT"
-          echo "build_matrix=${BUILD_MATRIX}" >> "$GITHUB_OUTPUT"
+          HAS_FETCH=false
+          FETCH_MATRIX='{"include":[]}'
+          if [[ ${#FETCH_ENTRIES[@]} -gt 0 ]]; then
+            HAS_FETCH=true
+            FETCH_MATRIX=$(printf '%s\n' "${FETCH_ENTRIES[@]}" | jq -cs '{include: .}')
+          elif [[ ${#FETCH_MOLD_DIRS[@]} -gt 0 ]]; then
+            echo "::warning::Fetch-type molds with removed DT_NEEDED entries detected but no Tier 1 platform entries generated"
+          fi
+
+          {
+            echo "has_build_targets=${HAS_BUILD}"
+            echo "build_matrix=${BUILD_MATRIX}"
+            echo "has_fetch_targets=${HAS_FETCH}"
+            echo "fetch_matrix=${FETCH_MATRIX}"
+          } >> "$GITHUB_OUTPUT"
 
   # ============================================================
   # Build stages: 3-stage splitting for source-build molds.
@@ -634,7 +684,101 @@ jobs:
           path: ${{ runner.temp }}/output/
           retention-days: 3
 
-  # upload-package: Consolidate build artifacts and publish to ghcr.io (OCI).
+  # ============================================================
+  # Fetch-type molds whose binary entries remove DT_NEEDED entries.
+  #
+  # The binaries no longer match the upstream archive, so they are
+  # published as ingots. One run of cast-ingot.sh covers download through
+  # the archive; there are no stages. Linux only, inside the container
+  # that matches glibc_min, launched like the build stages. The packages
+  # are those of the fetch validation in pr-validation.yml.
+  # ============================================================
+
+  cast-fetch:
+    needs: detect-build-targets
+    if: needs.detect-build-targets.outputs.has_fetch_targets == 'true'
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 90
+    strategy:
+      matrix: ${{ fromJSON(needs.detect-build-targets.outputs.fetch_matrix) }}
+      fail-fast: false
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Maximize build space
+        run: |
+          echo "=== Disk usage before cleanup ==="
+          df -h /
+          sudo rm -rf /usr/share/dotnet
+          sudo rm -rf /usr/local/lib/android
+          sudo rm -rf /opt/ghc
+          sudo rm -rf /opt/hostedtoolcache
+          sudo rm -rf /usr/share/swift
+          sudo rm -rf /usr/local/.ghcup
+          sudo docker image prune -af 2>/dev/null || true
+          echo "=== Disk usage after cleanup ==="
+          df -h /
+
+      - name: Run fetch cast
+        env:
+          MOLD: ${{ matrix.mold }}
+          PLATFORM: ${{ matrix.platform }}
+          ARCH: ${{ matrix.arch }}
+          CONTAINER: ${{ matrix.container }}
+        run: |
+          set -euo pipefail
+          OUTPUT_DIR="${RUNNER_TEMP}/output"
+          mkdir -p "${OUTPUT_DIR}"
+          chmod +x scripts/cast-ingot.sh scripts/smoke-test.sh
+
+          docker run --rm \
+            -v "${GITHUB_WORKSPACE}:/workspace" \
+            -v "${OUTPUT_DIR}:/output" \
+            -e DEBIAN_FRONTEND=noninteractive \
+            -e OUTPUT_DIR=/output \
+            -e MOLD_ARG="${MOLD}" \
+            -e PLATFORM_ARG="${PLATFORM}" \
+            -e ARCH_ARG="${ARCH}" \
+            -w /workspace \
+            "${CONTAINER}" \
+            bash -c '
+              set -euo pipefail
+              apt-get update -qq
+              apt-get install -y -qq \
+                ca-certificates curl jq xz-utils file binutils \
+                python3-pip libc6-dev libxml2 patchelf libatomic1
+              python3 -c "import tomllib" 2>/dev/null || pip3 install tomli
+              scripts/cast-ingot.sh "${MOLD_ARG}" "${PLATFORM_ARG}" "${ARCH_ARG}"
+            '
+
+      - name: Smoke test libc++ in a minimal container
+        if: matrix.family == 'llvm'
+        env:
+          CONTAINER: ${{ matrix.container }}
+          LATEST_IMAGE: ubuntu:24.04
+        run: |
+          set -euo pipefail
+          mapfile -t INGOTS < <(find "${RUNNER_TEMP}/output" -name '*.tar.xz' -type f)
+          if [[ ${#INGOTS[@]} -ne 1 ]]; then
+            echo "::error::Expected one ingot archive, found ${#INGOTS[@]}"
+            exit 1
+          fi
+          INGOT_DIR="${RUNNER_TEMP}/minimal-ingot"
+          mkdir -p "$INGOT_DIR"
+          tar -xJf "${INGOTS[0]}" -C "$INGOT_DIR"
+          scripts/smoke-test-libcxx.sh "$INGOT_DIR" "$CONTAINER"
+          if [[ "$LATEST_IMAGE" != "$CONTAINER" ]]; then
+            scripts/smoke-test-libcxx.sh "$INGOT_DIR" "$LATEST_IMAGE"
+          fi
+
+      - name: Upload ingot artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: ingot-${{ matrix.family }}-${{ matrix.version }}-${{ matrix.platform }}-${{ matrix.arch }}
+          path: ${{ runner.temp }}/output/
+          retention-days: 3
+
+  # upload-package: Consolidate ingot artifacts and publish to ghcr.io (OCI).
   #
   # Design:
   #   - Push each platform's ingot as a separate OCI artifact with a
@@ -642,7 +786,9 @@ jobs:
   #   - Create an OCI Index manifest combining all platforms under the
   #     version tag (e.g., gcc:14.2.0)
   #   - Output package-manifest JSON for downstream index generation
-  #   - Partial release prevention: skip molds missing any Tier 1 platform
+  #   - Partial release prevention: skip molds missing any platform they
+  #     cast (Tier 1 platforms for build-type molds, those removing
+  #     DT_NEEDED entries for fetch-type molds)
   #
   # Dependency design:
   #   needs does NOT include cast-build-configure or cast-build-make.
@@ -651,10 +797,11 @@ jobs:
   #   runs (via always()) but finds no artifacts -> per-mold completeness
   #   check skips the mold -> no partial release.
   upload-package:
-    needs: [detect-build-targets, cast-build-package]
+    needs: [detect-build-targets, cast-build-package, cast-fetch]
     if: |
       always()
-      && needs.detect-build-targets.outputs.has_build_targets == 'true'
+      && (needs.detect-build-targets.outputs.has_build_targets == 'true'
+          || needs.detect-build-targets.outputs.has_fetch_targets == 'true')
       && !contains(needs.*.result, 'failure')
       && !contains(needs.*.result, 'cancelled')
     runs-on: ubuntu-24.04
@@ -729,8 +876,10 @@ jobs:
             [[ -z "${META_LIST[-1]}" ]] && unset 'META_LIST[-1]'
             PLATFORM_COUNT=${#META_LIST[@]}
 
-            # Determine expected platform count: intersect source.platforms.supported
-            # with Tier 1 platforms. If source.platforms is omitted, use Tier 1 count.
+            # Determine expected platform count: intersect the platforms the
+            # mold casts with Tier 1 platforms. A fetch-type mold casts those
+            # whose binary entry removes DT_NEEDED entries; a build-type mold
+            # those in source.platforms.supported, or all when it is omitted.
             MOLD_DIR="molds/${key}"
             EXPECTED_COUNT=$(MOLD_VAR="$MOLD_DIR" python3 -c "
           import tomllib, os
@@ -740,8 +889,12 @@ jobs:
           with open('platforms.toml', 'rb') as f:
               plat_data = tomllib.load(f)
           tier1_ids = {f\"{p['platform']}-{p['arch']}\" for p in plat_data['platforms']['tier1']}
-          supported = mold_data.get('source', {}).get('platforms', {}).get('supported', [])
-          if supported:
+          source = mold_data.get('source', {})
+          supported = source.get('platforms', {}).get('supported', [])
+          if source.get('type') == 'fetch':
+              cast_ids = {f\"{b['platform']}-{b['arch']}\" for b in source.get('binaries', []) if b.get('remove_needed')}
+              count = len(cast_ids & tier1_ids)
+          elif supported:
               count = len(set(supported) & tier1_ids)
           else:
               count = len(tier1_ids)
@@ -793,12 +946,19 @@ jobs:
               # tab-separated read would let an empty field shift into its
               # neighbour.
               mapfile -t META_FIELDS < <(
-                jq -r '.platform, .arch, .ingot_file, (.glibc_version // "")' "$meta_file"
+                jq -r '.platform, .arch, .ingot_file, .source_type, (.glibc_version // "")' "$meta_file"
               )
               PLATFORM="${META_FIELDS[0]:-}"
               ARCH="${META_FIELDS[1]:-}"
               INGOT_FILE="${META_FIELDS[2]:-}"
-              GLIBC_VERSION="${META_FIELDS[3]:-}"
+              SOURCE_TYPE="${META_FIELDS[3]:-}"
+              GLIBC_VERSION="${META_FIELDS[4]:-}"
+
+              if [[ "$SOURCE_TYPE" != "build" && "$SOURCE_TYPE" != "fetch" ]]; then
+                echo "::error::Invalid source_type '${SOURCE_TYPE}' in ${meta_file}"
+                PUSH_FAILED=true
+                break
+              fi
 
               PLATFORM_TAG="${VERSION}-${PLATFORM}-${ARCH}"
 
@@ -819,7 +979,7 @@ jobs:
                 --annotation "org.skipbit.scrap.version=${VERSION}"
                 --annotation "org.skipbit.scrap.platform=${PLATFORM}"
                 --annotation "org.skipbit.scrap.arch=${ARCH}"
-                --annotation "org.skipbit.scrap.source_type=build"
+                --annotation "org.skipbit.scrap.source_type=${SOURCE_TYPE}"
               )
               if [[ -n "$GLIBC_VERSION" ]]; then
                 ANNOTATIONS+=(--annotation "org.skipbit.scrap.glibc_version=${GLIBC_VERSION}")

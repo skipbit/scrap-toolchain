@@ -26,13 +26,13 @@ scrap-toolchain/
 1. A contributor submits a PR adding or updating a `molds/{family}/{version}/mold.toml`
 2. **PR Validation** — the mold is validated against `schema/mold-v1.schema.json`, and **fetch-type** molds are verified on Tier 1 platforms where binaries are defined (Linux platforms are mandatory; macOS is verified when a binary is available)
 3. On merge, **Ingot Cast** — CI processes the mold:
-   - **fetch** molds: no artifacts produced (validation already done in step 2)
+   - **fetch** molds: no artifacts produced (validation already done in step 2), except for the Linux binaries that remove DT_NEEDED entries, which CI patches and pushes to `ghcr.io` as ingots
    - **build** molds: CI builds the toolchain and pushes ingots to `ghcr.io` as OCI artifacts
 4. **Index Update** — `index.toml` is regenerated from mold definitions and build artifacts, then committed to the repository
 
 ## Mold Types
 
-- **fetch** — References prebuilt binaries from upstream (e.g., LLVM official releases). CI validates the recipe but does not produce artifacts; users download directly from upstream.
+- **fetch** — References prebuilt binaries from upstream (e.g., LLVM official releases). CI validates the recipe but does not produce artifacts; users download directly from upstream. A Linux binary entry can list DT_NEEDED entries to remove (`source.binaries[].remove_needed`, e.g., `libatomic.so.1` from libc++ of LLVM). CI removes them with `patchelf` after checking that the file takes no symbol from the library, and pushes the result to `ghcr.io` as an ingot; `index.toml` then lists the ingot for that platform instead of the upstream archive.
 - **build** — Builds from source (e.g., GCC). CI produces ingots and pushes them to `ghcr.io` as OCI artifacts. A build mold can list sources built into the toolchain (`source.build.in_tree`, e.g., GMP, MPFR, MPC and ISL for GCC) and packages installed alongside it (`source.build.companions`, e.g., binutils), so that the ingot runs without the libraries and tools of the machine that built it.
 
 ## Platform Tiers
@@ -47,11 +47,12 @@ scrap-toolchain/
 Every toolchain uses the C library of the system: glibc at least the `glibc_version` that `index.toml` lists for the ingot, and its headers (`libc6-dev` on Debian and Ubuntu).
 
 - **GCC** ingots carry everything else they need to compile and link, including binutils and the libraries the compiler loads.
-- **LLVM** molds use the upstream release binaries as they are, which also need:
+- **LLVM** molds use the upstream release binaries, which also need:
   - the C++ standard library headers (`libstdc++-<N>-dev`)
   - `libxml2` for LLVM 17 to 23.1.2 (except LLVM 17 on aarch64)
   - ICU 70 (`libicu70`, packaged in Ubuntu 22.04) for LLVM 23.1.0 to 23.1.2
   - binutils, unless linking with `-fuse-ld=lld`
+  - `libatomic1`, unless the mold removes `libatomic.so.1` with `remove_needed`. Such ingots are listed with `origin = "scrap-release"` in `index.toml`
 
 ## License
 

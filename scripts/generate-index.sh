@@ -143,7 +143,7 @@ oci_api_call() {
 
         # Re-acquire token on 401 (expired or invalid)
         if [[ "$http_code" == "401" && "$attempt" -lt "$MAX_API_RETRIES" ]]; then
-            warn "OCI API ${repo}/${endpoint} returned 401, re-acquiring token..."
+            warn "OCI API ${repo}/${endpoint} returned 401, re-acquiring token..." >&2
             token=$(oci_get_token "$repo")
             [[ -z "$token" ]] && break
             sleep 1
@@ -157,7 +157,7 @@ oci_api_call() {
         fi
 
         if [[ "$attempt" -lt "$MAX_API_RETRIES" ]]; then
-            warn "OCI API ${repo}/${endpoint} returned HTTP ${http_code}, retry ${attempt}/${MAX_API_RETRIES}..."
+            warn "OCI API ${repo}/${endpoint} returned HTTP ${http_code}, retry ${attempt}/${MAX_API_RETRIES}..." >&2
             sleep 2
         fi
     done
@@ -206,7 +206,7 @@ collect_build_ingots() {
                 )
 
                 if [[ -z "$platform" || -z "$arch" || -z "$digest" ]]; then
-                    warn "Incomplete asset entry in package-manifest (platform=${platform}, arch=${arch}, digest=${digest}); skipping"
+                    warn "Incomplete asset entry in package-manifest (platform=${platform}, arch=${arch}, digest=${digest}); skipping" >&2
                     continue
                 fi
 
@@ -245,7 +245,7 @@ collect_build_ingots() {
             # Verify this is an OCI Index (has .manifests array), not a single manifest.
             # A single-platform manifest has .config + .layers but no .manifests.
             if ! jq -e 'has("manifests")' <<< "$index_manifest" >/dev/null 2>&1; then
-                warn "OCI manifest for ${family}:${version} is not an Index; cannot extract per-platform digests"
+                warn "OCI manifest for ${family}:${version} is not an Index; cannot extract per-platform digests" >&2
             else
             local manifest_count
             manifest_count=$(jq '.manifests | length' <<< "$index_manifest" 2>/dev/null) || manifest_count=0
@@ -276,7 +276,7 @@ collect_build_ingots() {
                           else {} end)' <<< "$index_manifest" 2>/dev/null) || entry=""
 
                 if [[ -z "$entry" ]]; then
-                    warn "Descriptor ${i} of ${family}:${version} has no digest or platform; skipping"
+                    warn "Descriptor ${i} of ${family}:${version} has no digest or platform; skipping" >&2
                     continue
                 fi
 
@@ -290,7 +290,8 @@ collect_build_ingots() {
 }
 
 # --- Collect fetch-type ingots from mold.toml ---
-# Reads source.binaries[] directly from the parsed mold JSON.
+# Reads source.binaries[] directly from the parsed mold JSON, leaving out
+# the entries that remove DT_NEEDED entries (see collect_cast_fetch_ingots).
 # No CI artifacts or API calls needed — mold.toml is the single source of truth.
 # Args: $1 = mold JSON (parsed mold.toml as JSON string)
 # Output: JSON array of ingot objects on stdout
@@ -300,13 +301,56 @@ collect_fetch_ingots() {
     glibc_min=$(jq -r '.source.glibc_min // empty' <<< "$mold_json")
 
     jq --arg glibc_min "$glibc_min" '
-        [.source.binaries[] | {
+        [.source.binaries[] | select(.remove_needed | not) | {
             platform,
             arch,
             url,
             sha256
         } + if (.platform == "linux" and $glibc_min != "") then {glibc_version: $glibc_min} else {} end]
     ' <<< "$mold_json"
+}
+
+# --- Collect ingots cast from fetch-type binaries ---
+# Binary entries that remove DT_NEEDED entries are published to the
+# registry like build-type ingots, and the upstream archive is never listed
+# in their place. A platform missing from the registry keeps the registry
+# entry of the current index, or is left out.
+# Args: $1 = mold JSON, $2 = family, $3 = version
+# Output: JSON array of ingot objects on stdout
+collect_cast_fetch_ingots() {
+    local mold_json="$1" family="$2" version="$3"
+    local cast_ids
+    cast_ids=$(jq -c '[.source.binaries[] | select(.remove_needed) | {platform, arch}]' <<< "$mold_json")
+    if [[ "$cast_ids" == "[]" ]]; then
+        echo "[]"
+        return
+    fi
+
+    local registry_ingots existing_ingots="[]" ingots
+    registry_ingots=$(collect_build_ingots "$family" "$version")
+    if [[ -n "$EXISTING_INDEX_JSON" ]]; then
+        existing_ingots=$(jq --arg f "$family" --arg v "$version" \
+            '[.toolchains[]? | select(.family == $f and .version == $v) | .ingots[]? | select(has("registry"))]' \
+            <<< "$EXISTING_INDEX_JSON")
+    fi
+
+    ingots=$(jq -n --argjson ids "$cast_ids" \
+        --argjson registry "$registry_ingots" \
+        --argjson existing "$existing_ingots" '
+        def on($id): select(.platform == $id.platform and .arch == $id.arch);
+        [$ids[] as $id
+         | (([$registry[] | on($id)] | first) // ([$existing[] | on($id)] | first))
+         | select(. != null)]')
+
+    # Progress goes to stderr: stdout carries the JSON.
+    jq -rn --argjson ids "$cast_ids" --argjson ingots "$ingots" '
+        $ids[] as $id
+        | select([$ingots[] | select(.platform == $id.platform and .arch == $id.arch)] | length == 0)
+        | "\($id.platform)-\($id.arch)"' \
+    | while IFS= read -r id; do
+        warn "${family} ${version} ${id}: not in the registry; left out of the index" >&2
+    done
+    echo "$ingots"
 }
 
 # --- Step 1: Scan molds ---
@@ -414,16 +458,21 @@ json.dump(data, sys.stdout)
     info "Processing: ${family} ${version} (${source_type}, ${status})"
 
     # Collect ingots based on source type
-    origin=""
     if [[ "$source_type" == "fetch" ]]; then
-        # Fetch type: read directly from mold.toml (mold is single source of truth)
-        ingots=$(collect_fetch_ingots "$mold_json")
-        origin="upstream"
+        # Fetch type: upstream URLs from mold.toml, and OCI references for
+        # the binaries that remove DT_NEEDED entries
+        upstream_ingots=$(collect_fetch_ingots "$mold_json")
+        cast_ingots=$(collect_cast_fetch_ingots "$mold_json" "$family" "$version")
+        if ! ingots=$(jq -n --argjson upstream "$upstream_ingots" --argjson cast "$cast_ingots" \
+            '($upstream | map(. + {origin: "upstream"})) + ($cast | map(. + {origin: "scrap-release"}))'); then
+            warn "Failed to collect the ingots of ${mold_path}; skipping"
+            MOLD_ERRORS=$((MOLD_ERRORS + 1))
+            continue
+        fi
         info "Fetch type: reading upstream URLs from mold.toml"
     elif [[ "$source_type" == "build" ]]; then
         # Build type: collect OCI references
         ingots=$(collect_build_ingots "$family" "$version")
-        origin="scrap-release"
 
         # Build type: preserve existing entries on API failure
         ingot_count=$(jq 'length' <<< "$ingots" 2>/dev/null) || ingot_count=0
@@ -437,6 +486,7 @@ json.dump(data, sys.stdout)
                 info "Preserved existing ingot(s) from current index"
             fi
         fi
+        ingots=$(jq 'map(. + {origin: "scrap-release"})' <<< "$ingots")
     else
         warn "Unknown source type '${source_type}' in ${mold_path}; skipping"
         MOLD_ERRORS=$((MOLD_ERRORS + 1))
@@ -463,7 +513,6 @@ json.dump(data, sys.stdout)
         --arg source_type "$source_type" \
         --arg compiler "$compiler" \
         --arg min_scrap "$min_scrap" \
-        --arg origin "$origin" \
         --argjson ingots "$ingots" \
         '{
             family: $family,
@@ -471,8 +520,7 @@ json.dump(data, sys.stdout)
             status: $status,
             license: $license,
             source_type: $source_type,
-            compiler: $compiler,
-            origin: $origin
+            compiler: $compiler
         }
         + if $min_scrap != "" then {min_scrap_version: $min_scrap} else {} end
         + {ingots: $ingots}')
@@ -528,8 +576,6 @@ for tc in toolchains:
     lines.append(f'license = \"{esc(tc[\"license\"])}\"')
     lines.append(f'source_type = \"{esc(tc[\"source_type\"])}\"')
     lines.append(f'compiler = \"{esc(tc[\"compiler\"])}\"')
-    if tc.get('origin'):
-        lines.append(f'origin = \"{esc(tc[\"origin\"])}\"')
     if tc.get('min_scrap_version'):
         lines.append(f'min_scrap_version = \"{esc(tc[\"min_scrap_version\"])}\"')
 
@@ -540,6 +586,7 @@ for tc in toolchains:
         lines.append('[[toolchains.ingots]]')
         lines.append(f'platform = \"{esc(ingot[\"platform\"])}\"')
         lines.append(f'arch = \"{esc(ingot[\"arch\"])}\"')
+        lines.append(f'origin = \"{esc(ingot[\"origin\"])}\"')
 
         if 'registry' in ingot:
             # Build type: OCI reference (registry + tag + digest)

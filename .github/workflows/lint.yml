@@ -24,8 +24,6 @@ jobs:
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v7
-        with:
-          fetch-depth: 0
 
       - name: Install shellcheck and actionlint
         run: |
@@ -50,32 +48,14 @@ jobs:
           echo "$BIN_DIR" >> "$GITHUB_PATH"
 
       - name: shellcheck
-        env:
-          BASE_SHA: ${{ github.event.pull_request.base.sha }}
         run: |
           set -euo pipefail
           shellcheck --version
 
-          # SC2254 in cast-ingot.sh is excluded only while a pull request
-          # leaves the file alone: any change to it rebuilds every ingot,
-          # so the warnings are fixed together with the next change.
-          CHANGED_FILES=$(git diff --name-only "$BASE_SHA" HEAD)
-          EXCLUDE=()
-          if ! grep -qxF 'scripts/cast-ingot.sh' <<< "$CHANGED_FILES"; then
-            EXCLUDE=(--exclude=SC2254)
-          fi
-
           # A git pathspec '*' also matches '/', so nested scripts are included.
           ALL_SCRIPTS=$(git ls-files 'scripts/*.sh')
-          OTHER_SCRIPTS=()
-          while IFS= read -r f; do
-            [[ "$f" == scripts/cast-ingot.sh ]] || OTHER_SCRIPTS+=("$f")
-          done <<< "$ALL_SCRIPTS"
-
-          RC=0
-          shellcheck "${OTHER_SCRIPTS[@]}" || RC=1
-          shellcheck "${EXCLUDE[@]}" scripts/cast-ingot.sh || RC=1
-          exit "$RC"
+          mapfile -t SCRIPTS <<< "$ALL_SCRIPTS"
+          shellcheck "${SCRIPTS[@]}"
 
       - name: actionlint
         run: |
