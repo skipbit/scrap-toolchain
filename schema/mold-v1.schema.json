@@ -248,7 +248,7 @@
       "properties": {
         "file": {
           "type": "string",
-          "pattern": "^[^/].*[^/]$",
+          "pattern": "^(?!/)(?!\\.\\.(/|$))(?!.*/\\.\\.(/|$)).*[^/]$",
           "description": "ELF file path relative to the extracted root"
         },
         "library": {
