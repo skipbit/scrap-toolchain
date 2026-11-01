@@ -683,6 +683,80 @@ jobs:
           path: ${{ runner.temp }}/output/
           retention-days: 3
 
+  # ============================================================
+  # Fetch-type molds whose binary entries remove DT_NEEDED entries.
+  #
+  # The binaries no longer match the upstream archive, so they are
+  # published as ingots. One run of cast-ingot.sh covers download through
+  # the archive; there are no stages. Linux only, inside the container
+  # that matches glibc_min, launched like the build stages. The packages
+  # are those of the fetch validation in pr-validation.yml.
+  # ============================================================
+
+  cast-fetch:
+    needs: detect-build-targets
+    if: needs.detect-build-targets.outputs.has_fetch_targets == 'true'
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 90
+    strategy:
+      matrix: ${{ fromJSON(needs.detect-build-targets.outputs.fetch_matrix) }}
+      fail-fast: false
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Maximize build space
+        run: |
+          echo "=== Disk usage before cleanup ==="
+          df -h /
+          sudo rm -rf /usr/share/dotnet
+          sudo rm -rf /usr/local/lib/android
+          sudo rm -rf /opt/ghc
+          sudo rm -rf /opt/hostedtoolcache
+          sudo rm -rf /usr/share/swift
+          sudo rm -rf /usr/local/.ghcup
+          sudo docker image prune -af 2>/dev/null || true
+          echo "=== Disk usage after cleanup ==="
+          df -h /
+
+      - name: Run fetch cast
+        env:
+          MOLD: ${{ matrix.mold }}
+          PLATFORM: ${{ matrix.platform }}
+          ARCH: ${{ matrix.arch }}
+          CONTAINER: ${{ matrix.container }}
+        run: |
+          set -euo pipefail
+          OUTPUT_DIR="${RUNNER_TEMP}/output"
+          mkdir -p "${OUTPUT_DIR}"
+          chmod +x scripts/cast-ingot.sh scripts/smoke-test.sh
+
+          docker run --rm \
+            -v "${GITHUB_WORKSPACE}:/workspace" \
+            -v "${OUTPUT_DIR}:/output" \
+            -e DEBIAN_FRONTEND=noninteractive \
+            -e OUTPUT_DIR=/output \
+            -e MOLD_ARG="${MOLD}" \
+            -e PLATFORM_ARG="${PLATFORM}" \
+            -e ARCH_ARG="${ARCH}" \
+            -w /workspace \
+            "${CONTAINER}" \
+            bash -c '
+              set -euo pipefail
+              apt-get update -qq
+              apt-get install -y -qq \
+                ca-certificates curl jq xz-utils file binutils \
+                python3-pip libc6-dev libxml2 patchelf libatomic1
+              python3 -c "import tomllib" 2>/dev/null || pip3 install tomli
+              scripts/cast-ingot.sh "${MOLD_ARG}" "${PLATFORM_ARG}" "${ARCH_ARG}"
+            '
+
+      - name: Upload ingot artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: ingot-${{ matrix.family }}-${{ matrix.version }}-${{ matrix.platform }}-${{ matrix.arch }}
+          path: ${{ runner.temp }}/output/
+          retention-days: 3
+
   # upload-package: Consolidate build artifacts and publish to ghcr.io (OCI).
   #
   # Design:
