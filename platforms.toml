@@ -20,7 +20,7 @@ description = "Linux aarch64 (glibc 2.31+)"
 [[platforms.tier1]]
 platform = "darwin"
 arch = "aarch64"
-runner = "macos-14"
+runner = "macos-15"
 description = "macOS Apple Silicon"
 
 # glibc version to container image mapping for Linux platforms.
