@@ -797,13 +797,14 @@ jobs:
   #   cast-build-make failure -> cast-build-package skipped -> upload-package
   #   runs (via always()) but finds no artifacts -> per-mold completeness
   #   check skips the mold -> no partial release.
+  #   A failed cast-build-package or cast-fetch cell likewise leaves only its
+  #   own mold incomplete, so the other molds are still published.
   upload-package:
     needs: [detect-build-targets, cast-build-package, cast-fetch]
     if: |
       always()
       && (needs.detect-build-targets.outputs.has_build_targets == 'true'
           || needs.detect-build-targets.outputs.has_fetch_targets == 'true')
-      && !contains(needs.*.result, 'failure')
       && !contains(needs.*.result, 'cancelled')
     runs-on: ubuntu-24.04
     steps:
