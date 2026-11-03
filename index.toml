@@ -1,6 +1,6 @@
 [index]
 schema_version = 1
-generated_at = "2026-11-03T03:16:08Z"
+generated_at = "2026-11-03T07:44:04Z"
 generator = "scripts/generate-index.sh"
 
 [[toolchains]]
@@ -1447,17 +1447,19 @@ compiler = "clang++"
 [[toolchains.ingots]]
 platform = "linux"
 arch = "aarch64"
-origin = "upstream"
-url = "https://github.com/llvm/llvm-project/releases/download/llvmorg-21.1.0/LLVM-21.1.0-Linux-ARM64.tar.xz"
-sha256 = "ffd51d9a583c1f662abc101f3a125d7303b21ad7d4e15773c8ad2c14cf621d5e"
+origin = "scrap-release"
+registry = "ghcr.io/skipbit/scrap-toolchain"
+tag = "llvm:21.1.0"
+digest = "sha256:fe581cb02ef924dda6a54ea14f5878cae07027bcb03cdb840e9c0134654068fe"
 glibc_version = "2.34"
 
 [[toolchains.ingots]]
 platform = "linux"
 arch = "x86_64"
-origin = "upstream"
-url = "https://github.com/llvm/llvm-project/releases/download/llvmorg-21.1.0/LLVM-21.1.0-Linux-X64.tar.xz"
-sha256 = "4a8c4b07646a4a2eb76ccf1d73522c3e13519745b72ef09d631c09b7577b0ed2"
+origin = "scrap-release"
+registry = "ghcr.io/skipbit/scrap-toolchain"
+tag = "llvm:21.1.0"
+digest = "sha256:c56b9d017254c1fb1641ce0140908b580b92763a439270824db3f0a474249b47"
 glibc_version = "2.34"
 
 [[toolchains]]
@@ -1471,17 +1473,19 @@ compiler = "clang++"
 [[toolchains.ingots]]
 platform = "linux"
 arch = "aarch64"
-origin = "upstream"
-url = "https://github.com/llvm/llvm-project/releases/download/llvmorg-21.1.1/LLVM-21.1.1-Linux-ARM64.tar.xz"
-sha256 = "2764bb49ad4dab93226328d6374ca4466799bdc18372c544d8f6ebc1aa0c28a9"
+origin = "scrap-release"
+registry = "ghcr.io/skipbit/scrap-toolchain"
+tag = "llvm:21.1.1"
+digest = "sha256:88f9603a591784a682ae0440510211053cd5c9b9142e172749a4ba38754de10f"
 glibc_version = "2.34"
 
 [[toolchains.ingots]]
 platform = "linux"
 arch = "x86_64"
-origin = "upstream"
-url = "https://github.com/llvm/llvm-project/releases/download/llvmorg-21.1.1/LLVM-21.1.1-Linux-X64.tar.xz"
-sha256 = "fe9886992273e469fbd664851cbee2f125b383664694684923a41af1c71b9632"
+origin = "scrap-release"
+registry = "ghcr.io/skipbit/scrap-toolchain"
+tag = "llvm:21.1.1"
+digest = "sha256:489184635d1eb0e68fe39c93f6006b653b5476e2749548e3280d1b66ddbecc7c"
 glibc_version = "2.34"
 
 [[toolchains]]
@@ -1495,17 +1499,19 @@ compiler = "clang++"
 [[toolchains.ingots]]
 platform = "linux"
 arch = "aarch64"
-origin = "upstream"
-url = "https://github.com/llvm/llvm-project/releases/download/llvmorg-21.1.2/LLVM-21.1.2-Linux-ARM64.tar.xz"
-sha256 = "b16c36731eabdc3cbe7f265e241efdb9aa6ab7c4be4114763c356da1392aac73"
+origin = "scrap-release"
+registry = "ghcr.io/skipbit/scrap-toolchain"
+tag = "llvm:21.1.2"
+digest = "sha256:88e1d264a1f38d7b06f2329c28cf3d3d6a50084e9e1210b96eddd27385f5f655"
 glibc_version = "2.34"
 
 [[toolchains.ingots]]
 platform = "linux"
 arch = "x86_64"
-origin = "upstream"
-url = "https://github.com/llvm/llvm-project/releases/download/llvmorg-21.1.2/LLVM-21.1.2-Linux-X64.tar.xz"
-sha256 = "38dc1e278b8d688d9f4f1077da1dcda623d9e0dd89ffcf03bc18d3492bbd9cb6"
+origin = "scrap-release"
+registry = "ghcr.io/skipbit/scrap-toolchain"
+tag = "llvm:21.1.2"
+digest = "sha256:14df7c20bda1e85413dde68b30f3a0805339a179b8f98e06dbe4adbbf468dfd0"
 glibc_version = "2.34"
 
 [[toolchains]]
@@ -1519,17 +1525,19 @@ compiler = "clang++"
 [[toolchains.ingots]]
 platform = "linux"
 arch = "aarch64"
-origin = "upstream"
-url = "https://github.com/llvm/llvm-project/releases/download/llvmorg-21.1.3/LLVM-21.1.3-Linux-ARM64.tar.xz"
-sha256 = "563be4f9f9186c909e5de937b2097338132422957c7919a29d8ff524a32213c0"
+origin = "scrap-release"
+registry = "ghcr.io/skipbit/scrap-toolchain"
+tag = "llvm:21.1.3"
+digest = "sha256:f436320a6852afb725c2667656641ba5f4667dd095a6bce70610147601ed78a5"
 glibc_version = "2.34"
 
 [[toolchains.ingots]]
 platform = "linux"
 arch = "x86_64"
-origin = "upstream"
-url = "https://github.com/llvm/llvm-project/releases/download/llvmorg-21.1.3/LLVM-21.1.3-Linux-X64.tar.xz"
-sha256 = "52866dc560a4c00c12fed63a006d629108117e2282fd37875887961dd7b5f6f8"
+origin = "scrap-release"
+registry = "ghcr.io/skipbit/scrap-toolchain"
+tag = "llvm:21.1.3"
+digest = "sha256:465065318d6f00f949cd9d58dc6969976b0b848bc3cf8010a816d03f2a7dc91e"
 glibc_version = "2.34"
 
 [[toolchains]]
@@ -1543,17 +1551,19 @@ compiler = "clang++"
 [[toolchains.ingots]]
 platform = "linux"
 arch = "aarch64"
-origin = "upstream"
-url = "https://github.com/llvm/llvm-project/releases/download/llvmorg-21.1.4/LLVM-21.1.4-Linux-ARM64.tar.xz"
-sha256 = "b1cdf40de4dc53fc090684fb6a160c0c9348242d85d2321441a9873cb116ea18"
+origin = "scrap-release"
+registry = "ghcr.io/skipbit/scrap-toolchain"
+tag = "llvm:21.1.4"
+digest = "sha256:0fc6c9ab8bff507417be54a27e84a966e8218ee6916239fba84c89a412b6a1c1"
 glibc_version = "2.34"
 
 [[toolchains.ingots]]
 platform = "linux"
 arch = "x86_64"
-origin = "upstream"
-url = "https://github.com/llvm/llvm-project/releases/download/llvmorg-21.1.4/LLVM-21.1.4-Linux-X64.tar.xz"
-sha256 = "53c8d9a173c39c952ae367974b0b9c1dcfddeb81341c3d0553748e8407abe9f8"
+origin = "scrap-release"
+registry = "ghcr.io/skipbit/scrap-toolchain"
+tag = "llvm:21.1.4"
+digest = "sha256:843162fc201cb3070b8c983ec439cd1f81598c6b7f6156a8781a9ed736bf4077"
 glibc_version = "2.34"
 
 [[toolchains]]
@@ -1567,17 +1577,19 @@ compiler = "clang++"
 [[toolchains.ingots]]
 platform = "linux"
 arch = "aarch64"
-origin = "upstream"
-url = "https://github.com/llvm/llvm-project/releases/download/llvmorg-21.1.5/LLVM-21.1.5-Linux-ARM64.tar.xz"
-sha256 = "c9a1ee5d1a1698a8eb0abda1c1e44c812378aec32f89cc4fbbb41865237359a9"
+origin = "scrap-release"
+registry = "ghcr.io/skipbit/scrap-toolchain"
+tag = "llvm:21.1.5"
+digest = "sha256:4066dd17d3bf584279b4b2a9bfa831ef7ce4950d1f7aaa4bf0fec093d70c2c1f"
 glibc_version = "2.34"
 
 [[toolchains.ingots]]
 platform = "linux"
 arch = "x86_64"
-origin = "upstream"
-url = "https://github.com/llvm/llvm-project/releases/download/llvmorg-21.1.5/LLVM-21.1.5-Linux-X64.tar.xz"
-sha256 = "6279d78feeeb8e839a397f0bca7b1c0594972224d59525496416653d9b9c077f"
+origin = "scrap-release"
+registry = "ghcr.io/skipbit/scrap-toolchain"
+tag = "llvm:21.1.5"
+digest = "sha256:4cc29f9c43369dc67006c90ee832284801d4d30cf7f05e77a3cdd4792ffcde1f"
 glibc_version = "2.34"
 
 [[toolchains]]
@@ -1598,17 +1610,19 @@ sha256 = "bdf036e9987b8706471b565f50178a34218909b1858a82c426269da49780b6ba"
 [[toolchains.ingots]]
 platform = "linux"
 arch = "aarch64"
-origin = "upstream"
-url = "https://github.com/llvm/llvm-project/releases/download/llvmorg-21.1.6/LLVM-21.1.6-Linux-ARM64.tar.xz"
-sha256 = "1d8a9e05007b8b9005c63f90d7646b2b6263451d605cca070418d0a71e669377"
+origin = "scrap-release"
+registry = "ghcr.io/skipbit/scrap-toolchain"
+tag = "llvm:21.1.6"
+digest = "sha256:405e2a6f9f95a682a339549af4cffde4eca2558d52c368a436d0de25f0cf7a42"
 glibc_version = "2.34"
 
 [[toolchains.ingots]]
 platform = "linux"
 arch = "x86_64"
-origin = "upstream"
-url = "https://github.com/llvm/llvm-project/releases/download/llvmorg-21.1.6/LLVM-21.1.6-Linux-X64.tar.xz"
-sha256 = "8ac1aadfa96b87b8747f7383d06ed9579f9d5c32a1af7af947b0cfe29d88ac87"
+origin = "scrap-release"
+registry = "ghcr.io/skipbit/scrap-toolchain"
+tag = "llvm:21.1.6"
+digest = "sha256:376087a5f3f246c5c79ffe07d104401ad742b3c2a8f70eb526e320551c5886df"
 glibc_version = "2.34"
 
 [[toolchains]]
@@ -1622,17 +1636,19 @@ compiler = "clang++"
 [[toolchains.ingots]]
 platform = "linux"
 arch = "aarch64"
-origin = "upstream"
-url = "https://github.com/llvm/llvm-project/releases/download/llvmorg-21.1.7/LLVM-21.1.7-Linux-ARM64.tar.xz"
-sha256 = "aa85ddc8ba95ac5f2febddb51a6891ee0e57ac058c6455395d5a4bfa5650d44b"
+origin = "scrap-release"
+registry = "ghcr.io/skipbit/scrap-toolchain"
+tag = "llvm:21.1.7"
+digest = "sha256:2eb1344145c6c45a880024eabaaaf8eed29281a0bd7271b2d847acf249e276da"
 glibc_version = "2.34"
 
 [[toolchains.ingots]]
 platform = "linux"
 arch = "x86_64"
-origin = "upstream"
-url = "https://github.com/llvm/llvm-project/releases/download/llvmorg-21.1.7/LLVM-21.1.7-Linux-X64.tar.xz"
-sha256 = "621ab8424178ffc28db0facc5aefd3fc11f5dea339aac171b36fa0b8d4b368cb"
+origin = "scrap-release"
+registry = "ghcr.io/skipbit/scrap-toolchain"
+tag = "llvm:21.1.7"
+digest = "sha256:811b7d537c165123d5931d829243484c3c080d99950331a0b99f54aae725c69b"
 glibc_version = "2.34"
 
 [[toolchains]]
@@ -1653,17 +1669,19 @@ sha256 = "b95bdd32a33a81ee4d40363aaeb26728a26783fcef26a4d80f65457433ea4669"
 [[toolchains.ingots]]
 platform = "linux"
 arch = "aarch64"
-origin = "upstream"
-url = "https://github.com/llvm/llvm-project/releases/download/llvmorg-21.1.8/LLVM-21.1.8-Linux-ARM64.tar.xz"
-sha256 = "65ce0b329514e5643407db2d02a5bd34bf33d159055dafa82825c8385bd01993"
+origin = "scrap-release"
+registry = "ghcr.io/skipbit/scrap-toolchain"
+tag = "llvm:21.1.8"
+digest = "sha256:52309475d251cae997e38ba0f43fc2d201df6e9c9deabf974a6f13e4161720d6"
 glibc_version = "2.34"
 
 [[toolchains.ingots]]
 platform = "linux"
 arch = "x86_64"
-origin = "upstream"
-url = "https://github.com/llvm/llvm-project/releases/download/llvmorg-21.1.8/LLVM-21.1.8-Linux-X64.tar.xz"
-sha256 = "b3b7f2801d15d50736acea3c73982994d025b01c2f035b91ae3b49d1b575732b"
+origin = "scrap-release"
+registry = "ghcr.io/skipbit/scrap-toolchain"
+tag = "llvm:21.1.8"
+digest = "sha256:0b312099ee73466eaf2a09f8d12c29391d3f78db91ba925540add197a9ff997f"
 glibc_version = "2.34"
 
 [[toolchains]]
