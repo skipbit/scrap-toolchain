@@ -77,7 +77,7 @@
       "properties": {
         "compiler": {
           "type": "string",
-          "description": "Compiler executable name (e.g., clang, g++)"
+          "description": "Compiler executable name (e.g., clang++, g++)"
         },
         "linker": {
           "type": "string",
