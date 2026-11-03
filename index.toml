@@ -1,6 +1,6 @@
 [index]
 schema_version = 1
-generated_at = "2026-11-02T14:11:35Z"
+generated_at = "2026-11-03T03:16:08Z"
 generator = "scripts/generate-index.sh"
 
 [[toolchains]]
@@ -607,7 +607,7 @@ version = "17.0.1"
 status = "active"
 license = "Apache-2.0 WITH LLVM-exception"
 source_type = "fetch"
-compiler = "clang"
+compiler = "clang++"
 
 [[toolchains.ingots]]
 platform = "darwin"
@@ -630,7 +630,7 @@ version = "17.0.2"
 status = "active"
 license = "Apache-2.0 WITH LLVM-exception"
 source_type = "fetch"
-compiler = "clang"
+compiler = "clang++"
 
 [[toolchains.ingots]]
 platform = "darwin"
@@ -661,7 +661,7 @@ version = "17.0.3"
 status = "active"
 license = "Apache-2.0 WITH LLVM-exception"
 source_type = "fetch"
-compiler = "clang"
+compiler = "clang++"
 
 [[toolchains.ingots]]
 platform = "darwin"
@@ -684,7 +684,7 @@ version = "17.0.4"
 status = "active"
 license = "Apache-2.0 WITH LLVM-exception"
 source_type = "fetch"
-compiler = "clang"
+compiler = "clang++"
 
 [[toolchains.ingots]]
 platform = "darwin"
@@ -715,7 +715,7 @@ version = "17.0.5"
 status = "active"
 license = "Apache-2.0 WITH LLVM-exception"
 source_type = "fetch"
-compiler = "clang"
+compiler = "clang++"
 
 [[toolchains.ingots]]
 platform = "darwin"
@@ -746,7 +746,7 @@ version = "17.0.6"
 status = "active"
 license = "Apache-2.0 WITH LLVM-exception"
 source_type = "fetch"
-compiler = "clang"
+compiler = "clang++"
 
 [[toolchains.ingots]]
 platform = "darwin"
@@ -777,7 +777,7 @@ version = "18.1.0"
 status = "active"
 license = "Apache-2.0 WITH LLVM-exception"
 source_type = "fetch"
-compiler = "clang"
+compiler = "clang++"
 
 [[toolchains.ingots]]
 platform = "linux"
@@ -793,7 +793,7 @@ version = "18.1.1"
 status = "active"
 license = "Apache-2.0 WITH LLVM-exception"
 source_type = "fetch"
-compiler = "clang"
+compiler = "clang++"
 
 [[toolchains.ingots]]
 platform = "linux"
@@ -809,7 +809,7 @@ version = "18.1.2"
 status = "active"
 license = "Apache-2.0 WITH LLVM-exception"
 source_type = "fetch"
-compiler = "clang"
+compiler = "clang++"
 
 [[toolchains.ingots]]
 platform = "linux"
@@ -825,7 +825,7 @@ version = "18.1.3"
 status = "active"
 license = "Apache-2.0 WITH LLVM-exception"
 source_type = "fetch"
-compiler = "clang"
+compiler = "clang++"
 
 [[toolchains.ingots]]
 platform = "linux"
@@ -841,7 +841,7 @@ version = "18.1.4"
 status = "active"
 license = "Apache-2.0 WITH LLVM-exception"
 source_type = "fetch"
-compiler = "clang"
+compiler = "clang++"
 
 [[toolchains.ingots]]
 platform = "linux"
@@ -857,7 +857,7 @@ version = "18.1.5"
 status = "active"
 license = "Apache-2.0 WITH LLVM-exception"
 source_type = "fetch"
-compiler = "clang"
+compiler = "clang++"
 
 [[toolchains.ingots]]
 platform = "linux"
@@ -873,7 +873,7 @@ version = "18.1.6"
 status = "active"
 license = "Apache-2.0 WITH LLVM-exception"
 source_type = "fetch"
-compiler = "clang"
+compiler = "clang++"
 
 [[toolchains.ingots]]
 platform = "linux"
@@ -889,7 +889,7 @@ version = "18.1.7"
 status = "active"
 license = "Apache-2.0 WITH LLVM-exception"
 source_type = "fetch"
-compiler = "clang"
+compiler = "clang++"
 
 [[toolchains.ingots]]
 platform = "linux"
@@ -913,7 +913,7 @@ version = "18.1.8"
 status = "active"
 license = "Apache-2.0 WITH LLVM-exception"
 source_type = "fetch"
-compiler = "clang"
+compiler = "clang++"
 
 [[toolchains.ingots]]
 platform = "darwin"
@@ -936,7 +936,7 @@ version = "19.1.0"
 status = "active"
 license = "Apache-2.0 WITH LLVM-exception"
 source_type = "fetch"
-compiler = "clang"
+compiler = "clang++"
 
 [[toolchains.ingots]]
 platform = "darwin"
@@ -967,7 +967,7 @@ version = "19.1.1"
 status = "active"
 license = "Apache-2.0 WITH LLVM-exception"
 source_type = "fetch"
-compiler = "clang"
+compiler = "clang++"
 
 [[toolchains.ingots]]
 platform = "darwin"
@@ -998,7 +998,7 @@ version = "19.1.2"
 status = "active"
 license = "Apache-2.0 WITH LLVM-exception"
 source_type = "fetch"
-compiler = "clang"
+compiler = "clang++"
 
 [[toolchains.ingots]]
 platform = "darwin"
@@ -1029,7 +1029,7 @@ version = "19.1.3"
 status = "active"
 license = "Apache-2.0 WITH LLVM-exception"
 source_type = "fetch"
-compiler = "clang"
+compiler = "clang++"
 
 [[toolchains.ingots]]
 platform = "darwin"
@@ -1060,7 +1060,7 @@ version = "19.1.4"
 status = "active"
 license = "Apache-2.0 WITH LLVM-exception"
 source_type = "fetch"
-compiler = "clang"
+compiler = "clang++"
 
 [[toolchains.ingots]]
 platform = "darwin"
@@ -1091,7 +1091,7 @@ version = "19.1.5"
 status = "active"
 license = "Apache-2.0 WITH LLVM-exception"
 source_type = "fetch"
-compiler = "clang"
+compiler = "clang++"
 
 [[toolchains.ingots]]
 platform = "linux"
@@ -1115,7 +1115,7 @@ version = "19.1.6"
 status = "active"
 license = "Apache-2.0 WITH LLVM-exception"
 source_type = "fetch"
-compiler = "clang"
+compiler = "clang++"
 
 [[toolchains.ingots]]
 platform = "darwin"
@@ -1146,7 +1146,7 @@ version = "19.1.7"
 status = "active"
 license = "Apache-2.0 WITH LLVM-exception"
 source_type = "fetch"
-compiler = "clang"
+compiler = "clang++"
 
 [[toolchains.ingots]]
 platform = "darwin"
@@ -1177,7 +1177,7 @@ version = "20.1.0"
 status = "active"
 license = "Apache-2.0 WITH LLVM-exception"
 source_type = "fetch"
-compiler = "clang"
+compiler = "clang++"
 
 [[toolchains.ingots]]
 platform = "darwin"
@@ -1208,7 +1208,7 @@ version = "20.1.1"
 status = "active"
 license = "Apache-2.0 WITH LLVM-exception"
 source_type = "fetch"
-compiler = "clang"
+compiler = "clang++"
 
 [[toolchains.ingots]]
 platform = "darwin"
@@ -1239,7 +1239,7 @@ version = "20.1.2"
 status = "active"
 license = "Apache-2.0 WITH LLVM-exception"
 source_type = "fetch"
-compiler = "clang"
+compiler = "clang++"
 
 [[toolchains.ingots]]
 platform = "darwin"
@@ -1270,7 +1270,7 @@ version = "20.1.3"
 status = "active"
 license = "Apache-2.0 WITH LLVM-exception"
 source_type = "fetch"
-compiler = "clang"
+compiler = "clang++"
 
 [[toolchains.ingots]]
 platform = "darwin"
@@ -1301,7 +1301,7 @@ version = "20.1.4"
 status = "active"
 license = "Apache-2.0 WITH LLVM-exception"
 source_type = "fetch"
-compiler = "clang"
+compiler = "clang++"
 
 [[toolchains.ingots]]
 platform = "darwin"
@@ -1332,7 +1332,7 @@ version = "20.1.5"
 status = "active"
 license = "Apache-2.0 WITH LLVM-exception"
 source_type = "fetch"
-compiler = "clang"
+compiler = "clang++"
 
 [[toolchains.ingots]]
 platform = "linux"
@@ -1356,7 +1356,7 @@ version = "20.1.6"
 status = "active"
 license = "Apache-2.0 WITH LLVM-exception"
 source_type = "fetch"
-compiler = "clang"
+compiler = "clang++"
 
 [[toolchains.ingots]]
 platform = "linux"
@@ -1380,7 +1380,7 @@ version = "20.1.7"
 status = "active"
 license = "Apache-2.0 WITH LLVM-exception"
 source_type = "fetch"
-compiler = "clang"
+compiler = "clang++"
 
 [[toolchains.ingots]]
 platform = "darwin"
@@ -1411,7 +1411,7 @@ version = "20.1.8"
 status = "active"
 license = "Apache-2.0 WITH LLVM-exception"
 source_type = "fetch"
-compiler = "clang"
+compiler = "clang++"
 
 [[toolchains.ingots]]
 platform = "darwin"
@@ -1442,7 +1442,7 @@ version = "21.1.0"
 status = "active"
 license = "Apache-2.0 WITH LLVM-exception"
 source_type = "fetch"
-compiler = "clang"
+compiler = "clang++"
 
 [[toolchains.ingots]]
 platform = "linux"
@@ -1466,7 +1466,7 @@ version = "21.1.1"
 status = "active"
 license = "Apache-2.0 WITH LLVM-exception"
 source_type = "fetch"
-compiler = "clang"
+compiler = "clang++"
 
 [[toolchains.ingots]]
 platform = "linux"
@@ -1490,7 +1490,7 @@ version = "21.1.2"
 status = "active"
 license = "Apache-2.0 WITH LLVM-exception"
 source_type = "fetch"
-compiler = "clang"
+compiler = "clang++"
 
 [[toolchains.ingots]]
 platform = "linux"
@@ -1514,7 +1514,7 @@ version = "21.1.3"
 status = "active"
 license = "Apache-2.0 WITH LLVM-exception"
 source_type = "fetch"
-compiler = "clang"
+compiler = "clang++"
 
 [[toolchains.ingots]]
 platform = "linux"
@@ -1538,7 +1538,7 @@ version = "21.1.4"
 status = "active"
 license = "Apache-2.0 WITH LLVM-exception"
 source_type = "fetch"
-compiler = "clang"
+compiler = "clang++"
 
 [[toolchains.ingots]]
 platform = "linux"
@@ -1562,7 +1562,7 @@ version = "21.1.5"
 status = "active"
 license = "Apache-2.0 WITH LLVM-exception"
 source_type = "fetch"
-compiler = "clang"
+compiler = "clang++"
 
 [[toolchains.ingots]]
 platform = "linux"
@@ -1586,7 +1586,7 @@ version = "21.1.6"
 status = "active"
 license = "Apache-2.0 WITH LLVM-exception"
 source_type = "fetch"
-compiler = "clang"
+compiler = "clang++"
 
 [[toolchains.ingots]]
 platform = "darwin"
@@ -1617,7 +1617,7 @@ version = "21.1.7"
 status = "active"
 license = "Apache-2.0 WITH LLVM-exception"
 source_type = "fetch"
-compiler = "clang"
+compiler = "clang++"
 
 [[toolchains.ingots]]
 platform = "linux"
@@ -1641,7 +1641,7 @@ version = "21.1.8"
 status = "active"
 license = "Apache-2.0 WITH LLVM-exception"
 source_type = "fetch"
-compiler = "clang"
+compiler = "clang++"
 
 [[toolchains.ingots]]
 platform = "darwin"
@@ -1672,7 +1672,7 @@ version = "22.1.0"
 status = "active"
 license = "Apache-2.0 WITH LLVM-exception"
 source_type = "fetch"
-compiler = "clang"
+compiler = "clang++"
 
 [[toolchains.ingots]]
 platform = "darwin"
@@ -1687,7 +1687,7 @@ arch = "aarch64"
 origin = "scrap-release"
 registry = "ghcr.io/skipbit/scrap-toolchain"
 tag = "llvm:22.1.0"
-digest = "sha256:9d7493ac9558f626ae2cf3b713441c0c6a9ce72c7a14a9c01668e488840b33f6"
+digest = "sha256:2bc7319855cc4a25f181e1778578d35d9d7f8d8a665e29276f8c03e22784dffc"
 glibc_version = "2.34"
 
 [[toolchains.ingots]]
@@ -1696,7 +1696,7 @@ arch = "x86_64"
 origin = "scrap-release"
 registry = "ghcr.io/skipbit/scrap-toolchain"
 tag = "llvm:22.1.0"
-digest = "sha256:0b996cbb133e037ec6eb6291f6f5f7c50561bbcee99f7db2d624cf4f270ec744"
+digest = "sha256:5b24d5c6561ec0ad5a929741b6351ee2666904fba6aa3c7dec428baee0cb18b8"
 glibc_version = "2.34"
 
 [[toolchains]]
@@ -1705,7 +1705,7 @@ version = "22.1.1"
 status = "active"
 license = "Apache-2.0 WITH LLVM-exception"
 source_type = "fetch"
-compiler = "clang"
+compiler = "clang++"
 
 [[toolchains.ingots]]
 platform = "darwin"
@@ -1720,7 +1720,7 @@ arch = "aarch64"
 origin = "scrap-release"
 registry = "ghcr.io/skipbit/scrap-toolchain"
 tag = "llvm:22.1.1"
-digest = "sha256:86dc4d104deb0e13063c5968d2ace16a4aee893435ab45e130c0ea785b07e7d4"
+digest = "sha256:ae22d0ea25397fbac5b8ec4b93647d44e22cf4be0f31ef7164d6b51b24ee5d1f"
 glibc_version = "2.34"
 
 [[toolchains.ingots]]
@@ -1729,7 +1729,7 @@ arch = "x86_64"
 origin = "scrap-release"
 registry = "ghcr.io/skipbit/scrap-toolchain"
 tag = "llvm:22.1.1"
-digest = "sha256:5075e33e429b47ac0a3915453fc3291accc8955e1fc1dbacda6b4e71a7d3387f"
+digest = "sha256:ef107132b34af5bd7ab4ece8301f0402da54b0cf48d37fafd9cb53697d802e6f"
 glibc_version = "2.34"
 
 [[toolchains]]
@@ -1738,7 +1738,7 @@ version = "22.1.2"
 status = "active"
 license = "Apache-2.0 WITH LLVM-exception"
 source_type = "fetch"
-compiler = "clang"
+compiler = "clang++"
 
 [[toolchains.ingots]]
 platform = "darwin"
@@ -1753,7 +1753,7 @@ arch = "aarch64"
 origin = "scrap-release"
 registry = "ghcr.io/skipbit/scrap-toolchain"
 tag = "llvm:22.1.2"
-digest = "sha256:a68585f260d7823032eefb8a412eed1290608c4a44d4acf61a707cab71b67e79"
+digest = "sha256:b2bb693a8fa514b7060161a4853cc5272649bd7b417bd0db641c41376f9c0591"
 glibc_version = "2.34"
 
 [[toolchains.ingots]]
@@ -1762,7 +1762,7 @@ arch = "x86_64"
 origin = "scrap-release"
 registry = "ghcr.io/skipbit/scrap-toolchain"
 tag = "llvm:22.1.2"
-digest = "sha256:a00ae375a56adc13506f95842d0525aa18b90b7e113aba066eb61a239dea7772"
+digest = "sha256:07b37212c2a01e04739dd9bc4eb7c604192a3fbeca41c4f22215b6c0132bf0ed"
 glibc_version = "2.34"
 
 [[toolchains]]
@@ -1771,7 +1771,7 @@ version = "22.1.3"
 status = "active"
 license = "Apache-2.0 WITH LLVM-exception"
 source_type = "fetch"
-compiler = "clang"
+compiler = "clang++"
 
 [[toolchains.ingots]]
 platform = "darwin"
@@ -1786,7 +1786,7 @@ arch = "aarch64"
 origin = "scrap-release"
 registry = "ghcr.io/skipbit/scrap-toolchain"
 tag = "llvm:22.1.3"
-digest = "sha256:944fbebfbbb6f40376f2ac8f48810d53a7344fe933f5579728df6404405bef14"
+digest = "sha256:59f6ea0a0aa5051534a6f5460d39c3515c4b22265a890a40951d63cd61c0e7ab"
 glibc_version = "2.34"
 
 [[toolchains.ingots]]
@@ -1795,7 +1795,7 @@ arch = "x86_64"
 origin = "scrap-release"
 registry = "ghcr.io/skipbit/scrap-toolchain"
 tag = "llvm:22.1.3"
-digest = "sha256:e2543244958a7d09d46330249cad32049630ea26fac1fa47c71052fa6b9632ec"
+digest = "sha256:a0c4608aab1382c45e3f27b688915ce1cdba93a728b4c9db87a9b48e919181da"
 glibc_version = "2.34"
 
 [[toolchains]]
@@ -1804,7 +1804,7 @@ version = "22.1.4"
 status = "active"
 license = "Apache-2.0 WITH LLVM-exception"
 source_type = "fetch"
-compiler = "clang"
+compiler = "clang++"
 
 [[toolchains.ingots]]
 platform = "darwin"
@@ -1819,7 +1819,7 @@ arch = "aarch64"
 origin = "scrap-release"
 registry = "ghcr.io/skipbit/scrap-toolchain"
 tag = "llvm:22.1.4"
-digest = "sha256:35c210278381cdfc3f344abb4db1de24d2da0d6b4abf4c2162955a682727f15c"
+digest = "sha256:a7d6868a4584109b453f2e7f58429ac5efe30fab253064596293159bbe2c54d9"
 glibc_version = "2.34"
 
 [[toolchains.ingots]]
@@ -1828,7 +1828,7 @@ arch = "x86_64"
 origin = "scrap-release"
 registry = "ghcr.io/skipbit/scrap-toolchain"
 tag = "llvm:22.1.4"
-digest = "sha256:0af775a4704894933d2124f134c5a8f7762b3c5bcc11ed50e6d611753365db0e"
+digest = "sha256:c0e55f1f2282e189b3e04948739ea8e07b463bbec4eec28e13e36e6c2da43da9"
 glibc_version = "2.34"
 
 [[toolchains]]
@@ -1837,7 +1837,7 @@ version = "22.1.5"
 status = "active"
 license = "Apache-2.0 WITH LLVM-exception"
 source_type = "fetch"
-compiler = "clang"
+compiler = "clang++"
 
 [[toolchains.ingots]]
 platform = "darwin"
@@ -1852,7 +1852,7 @@ arch = "aarch64"
 origin = "scrap-release"
 registry = "ghcr.io/skipbit/scrap-toolchain"
 tag = "llvm:22.1.5"
-digest = "sha256:b596cb5a48d030c1c96cc498a18d734945847bb2e670ece47a5785c11eeace01"
+digest = "sha256:f813d6f833fb594213dad70a4b670801fafe2a3ef5599837927b960e5cb0d795"
 glibc_version = "2.34"
 
 [[toolchains.ingots]]
@@ -1861,7 +1861,7 @@ arch = "x86_64"
 origin = "scrap-release"
 registry = "ghcr.io/skipbit/scrap-toolchain"
 tag = "llvm:22.1.5"
-digest = "sha256:1dda357ab97a43598abf957e9bd4d19bef4f75e91cdbf1acc08ea255f4be1de5"
+digest = "sha256:6a09415eaecf20c5b6c902a506be8f74e44ca0fdf07870085f315160903167ef"
 glibc_version = "2.34"
 
 [[toolchains]]
@@ -1870,7 +1870,7 @@ version = "22.1.6"
 status = "active"
 license = "Apache-2.0 WITH LLVM-exception"
 source_type = "fetch"
-compiler = "clang"
+compiler = "clang++"
 
 [[toolchains.ingots]]
 platform = "darwin"
@@ -1885,7 +1885,7 @@ arch = "aarch64"
 origin = "scrap-release"
 registry = "ghcr.io/skipbit/scrap-toolchain"
 tag = "llvm:22.1.6"
-digest = "sha256:b3950f3125a55b64184721e92ea804f7249aa2a3cd4b768f5fea89afb024f6d9"
+digest = "sha256:777f0c184204b4694a5a618fa1c8264b9f6ce16ca3ebcd436d4cd0ee648da772"
 glibc_version = "2.34"
 
 [[toolchains.ingots]]
@@ -1894,7 +1894,7 @@ arch = "x86_64"
 origin = "scrap-release"
 registry = "ghcr.io/skipbit/scrap-toolchain"
 tag = "llvm:22.1.6"
-digest = "sha256:23f41173fef76d1b642f44732eb156ee2572c6d74e53998c0561a3616458b724"
+digest = "sha256:3abbca0aa7833b4486669a27d65fc513540de0c7670b41e9e4f9f9383c1973cd"
 glibc_version = "2.34"
 
 [[toolchains]]
@@ -1903,7 +1903,7 @@ version = "22.1.7"
 status = "active"
 license = "Apache-2.0 WITH LLVM-exception"
 source_type = "fetch"
-compiler = "clang"
+compiler = "clang++"
 
 [[toolchains.ingots]]
 platform = "darwin"
@@ -1918,7 +1918,7 @@ arch = "aarch64"
 origin = "scrap-release"
 registry = "ghcr.io/skipbit/scrap-toolchain"
 tag = "llvm:22.1.7"
-digest = "sha256:edf781a4974d5b9711bc9bcc24996221211a29ab4e94266efda4445d1a0389cd"
+digest = "sha256:e8fb710b3fa233d57d4f24de4fa81435c59692bd431accf3921c4f4bd9cb5236"
 glibc_version = "2.34"
 
 [[toolchains.ingots]]
@@ -1927,7 +1927,7 @@ arch = "x86_64"
 origin = "scrap-release"
 registry = "ghcr.io/skipbit/scrap-toolchain"
 tag = "llvm:22.1.7"
-digest = "sha256:3f53d3aee60670c59a8e28139a8637b27587a04abf3bf95d5a39bba66f02165d"
+digest = "sha256:f408b5963256067cc2a67b83b897c9104ca05ffaf67fb2f8d193eeee71940396"
 glibc_version = "2.34"
 
 [[toolchains]]
@@ -1936,7 +1936,7 @@ version = "22.1.8"
 status = "active"
 license = "Apache-2.0 WITH LLVM-exception"
 source_type = "fetch"
-compiler = "clang"
+compiler = "clang++"
 
 [[toolchains.ingots]]
 platform = "darwin"
@@ -1951,7 +1951,7 @@ arch = "aarch64"
 origin = "scrap-release"
 registry = "ghcr.io/skipbit/scrap-toolchain"
 tag = "llvm:22.1.8"
-digest = "sha256:78672fedb225b4eaf5f821cf03339d070bd386dab786857f77e8378f2f169098"
+digest = "sha256:e1c4a865dc3cf13d08082a1043d6ec81867a898ad67442e54d046706069c8dc2"
 glibc_version = "2.34"
 
 [[toolchains.ingots]]
@@ -1960,7 +1960,7 @@ arch = "x86_64"
 origin = "scrap-release"
 registry = "ghcr.io/skipbit/scrap-toolchain"
 tag = "llvm:22.1.8"
-digest = "sha256:80e1b50a85559a1374f3359edee0de1d459c6ee2a49b6ce9090c2f4fa6e96b22"
+digest = "sha256:340e09d6b049f5bc3eb7b6bcbc3a606c51d2a1f041a99377d37ae3dc0bdc9fd0"
 glibc_version = "2.34"
 
 [[toolchains]]
@@ -1969,7 +1969,7 @@ version = "23.1.0"
 status = "active"
 license = "Apache-2.0 WITH LLVM-exception"
 source_type = "fetch"
-compiler = "clang"
+compiler = "clang++"
 
 [[toolchains.ingots]]
 platform = "linux"
@@ -1977,7 +1977,7 @@ arch = "aarch64"
 origin = "scrap-release"
 registry = "ghcr.io/skipbit/scrap-toolchain"
 tag = "llvm:23.1.0"
-digest = "sha256:68e6b0a48b0e38d44b2cf25f135e3f188c1fdad3e5ec968477a4bdb2a99bf186"
+digest = "sha256:47652c2bbf672274b364a531876a97759d62fdd33ad1991c1e56e69c73f57919"
 glibc_version = "2.34"
 
 [[toolchains.ingots]]
@@ -1986,7 +1986,7 @@ arch = "x86_64"
 origin = "scrap-release"
 registry = "ghcr.io/skipbit/scrap-toolchain"
 tag = "llvm:23.1.0"
-digest = "sha256:3a452205a286cbc4168bcaf527b9c7ea271005a39e72464e7e789a3278ef5a27"
+digest = "sha256:15be55ad927b42f0040d8cb2f2808ed7f1b5b9896fcb6a20121b4813e3dd9477"
 glibc_version = "2.34"
 
 [[toolchains]]
@@ -1995,7 +1995,7 @@ version = "23.1.1"
 status = "active"
 license = "Apache-2.0 WITH LLVM-exception"
 source_type = "fetch"
-compiler = "clang"
+compiler = "clang++"
 
 [[toolchains.ingots]]
 platform = "darwin"
@@ -2010,7 +2010,7 @@ arch = "aarch64"
 origin = "scrap-release"
 registry = "ghcr.io/skipbit/scrap-toolchain"
 tag = "llvm:23.1.1"
-digest = "sha256:3e8a51ec9d6523312b225a3a41c6851912ea491fefc59398d86858f415120b3d"
+digest = "sha256:a754c7230b7277f8030e0da3a39d88b91b261abea47db1a11c7fea95b554f71f"
 glibc_version = "2.34"
 
 [[toolchains.ingots]]
@@ -2019,7 +2019,7 @@ arch = "x86_64"
 origin = "scrap-release"
 registry = "ghcr.io/skipbit/scrap-toolchain"
 tag = "llvm:23.1.1"
-digest = "sha256:75d0572f7c65bae13034b8976c9b85158adbb17aee999298199d27239eabe489"
+digest = "sha256:0ce9207bbe6659e52c297585c68f75262f9d80504e25ce254916dfa6d10b4137"
 glibc_version = "2.34"
 
 [[toolchains]]
@@ -2028,7 +2028,7 @@ version = "23.1.2"
 status = "active"
 license = "Apache-2.0 WITH LLVM-exception"
 source_type = "fetch"
-compiler = "clang"
+compiler = "clang++"
 
 [[toolchains.ingots]]
 platform = "darwin"
@@ -2043,7 +2043,7 @@ arch = "aarch64"
 origin = "scrap-release"
 registry = "ghcr.io/skipbit/scrap-toolchain"
 tag = "llvm:23.1.2"
-digest = "sha256:2d8f1ac0e2f253e17422a2772ba232290efb42ba39c427b5fbc45c92876993bd"
+digest = "sha256:65df2120146de00bf43734e3ab17506c76c5eda83bd9727d2abc4e7e117473c6"
 glibc_version = "2.34"
 
 [[toolchains.ingots]]
@@ -2052,7 +2052,7 @@ arch = "x86_64"
 origin = "scrap-release"
 registry = "ghcr.io/skipbit/scrap-toolchain"
 tag = "llvm:23.1.2"
-digest = "sha256:47069351ae33c9a88342b95681d03db6c77c479d91f4ef89d52bc3b0447757f9"
+digest = "sha256:0f1cc5056a6c171eafc634cc0d98af7f092a153fa595b5e0f4c3be8eb7586c0f"
 glibc_version = "2.34"
 
 [[toolchains]]
@@ -2061,7 +2061,7 @@ version = "23.1.3"
 status = "active"
 license = "Apache-2.0 WITH LLVM-exception"
 source_type = "fetch"
-compiler = "clang"
+compiler = "clang++"
 
 [[toolchains.ingots]]
 platform = "darwin"
@@ -2076,7 +2076,7 @@ arch = "aarch64"
 origin = "scrap-release"
 registry = "ghcr.io/skipbit/scrap-toolchain"
 tag = "llvm:23.1.3"
-digest = "sha256:7f954751f47dbde4b631eb8a992af27052a257912bc5f87da979e3d05583025f"
+digest = "sha256:1c572a2a30b84a50367b9350ebca73b72e96da06be7eb122891efcbb22aba2e9"
 glibc_version = "2.34"
 
 [[toolchains.ingots]]
@@ -2085,7 +2085,7 @@ arch = "x86_64"
 origin = "scrap-release"
 registry = "ghcr.io/skipbit/scrap-toolchain"
 tag = "llvm:23.1.3"
-digest = "sha256:5d58b1aeeb1bb1880078d13ce41670cd5ba704f453196a16c1239509cb88faf4"
+digest = "sha256:053f3e08eccb4fd6c381aa2388be277f4b835210dd31e63e48eba2b31393f520"
 glibc_version = "2.34"
 
 [[toolchains]]
@@ -2094,7 +2094,7 @@ version = "23.1.4"
 status = "active"
 license = "Apache-2.0 WITH LLVM-exception"
 source_type = "fetch"
-compiler = "clang"
+compiler = "clang++"
 
 [[toolchains.ingots]]
 platform = "darwin"
@@ -2109,7 +2109,7 @@ arch = "aarch64"
 origin = "scrap-release"
 registry = "ghcr.io/skipbit/scrap-toolchain"
 tag = "llvm:23.1.4"
-digest = "sha256:6306c4072caffdf6d9f06012560f822b9559589dbd16845d87395727d9f009f8"
+digest = "sha256:64a00f1d90fd63ba9e2f90a049c77670d7645cf764d267da1ad0a257e1e71087"
 glibc_version = "2.34"
 
 [[toolchains.ingots]]
@@ -2118,6 +2118,6 @@ arch = "x86_64"
 origin = "scrap-release"
 registry = "ghcr.io/skipbit/scrap-toolchain"
 tag = "llvm:23.1.4"
-digest = "sha256:ae9658d4b7903e67ec133b47b52be324bfe055e2a4870c3ae8370acc6efd4bff"
+digest = "sha256:420a572b61b470ca514d56e922b5dfb01b1dd8ac9320969e064f00ca9ac50033"
 glibc_version = "2.34"
 
