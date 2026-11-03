@@ -21,12 +21,18 @@ platform = "linux"
 arch = "x86_64"
 url = "https://github.com/llvm/llvm-project/releases/download/llvmorg-20.1.1/LLVM-20.1.1-Linux-X64.tar.xz"
 sha256 = "b1f40360adbf31934d5d3d999c5f91f7e52e089ae984d237565cc4c23bbfa283"
+remove_needed = [
+  { file = "lib/x86_64-unknown-linux-gnu/libc++.so.1.0", library = "libatomic.so.1" },
+]
 
 [[source.binaries]]
 platform = "linux"
 arch = "aarch64"
 url = "https://github.com/llvm/llvm-project/releases/download/llvmorg-20.1.1/LLVM-20.1.1-Linux-ARM64.tar.xz"
 sha256 = "09f5a08ef6c96a7c6c11258b3053ae5ed11a6717ffd9fd01bbebd75d8038a0fc"
+remove_needed = [
+  { file = "lib/aarch64-unknown-linux-gnu/libc++.so.1.0", library = "libatomic.so.1" },
+]
 
 [[source.binaries]]
 platform = "darwin"
