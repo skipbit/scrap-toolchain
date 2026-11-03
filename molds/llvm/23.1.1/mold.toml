@@ -9,7 +9,7 @@ homepage = "https://llvm.org"
 description = "LLVM toolchain (Clang, LLD, libc++)"
 
 [metadata.components]
-compiler = "clang"
+compiler = "clang++"
 
 [source]
 type = "fetch"
@@ -48,5 +48,5 @@ int main() {
     return 0;
 }
 """
-compile_command = "{compiler}++ -std=c++23 -fuse-ld=lld -o hello hello.cpp"
+compile_command = "{compiler} -std=c++23 -fuse-ld=lld -o hello hello.cpp"
 expected_output = "Hello, scrap!\n"
