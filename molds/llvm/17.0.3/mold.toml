@@ -24,6 +24,9 @@ platform = "linux"
 arch = "aarch64"
 url = "https://github.com/llvm/llvm-project/releases/download/llvmorg-17.0.3/clang%2Bllvm-17.0.3-aarch64-linux-gnu.tar.xz"
 sha256 = "289da98e4cbc157153e987ff24ce835717a36cfab03ecd03bf359378ee4ae9d7"
+remove_needed = [
+  { file = "lib/aarch64-unknown-linux-gnu/libc++.so.1.0", library = "libatomic.so.1" },
+]
 
 [[source.binaries]]
 platform = "darwin"
