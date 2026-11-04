@@ -21,12 +21,18 @@ platform = "linux"
 arch = "x86_64"
 url = "https://github.com/llvm/llvm-project/releases/download/llvmorg-17.0.4/clang%2Bllvm-17.0.4-x86_64-linux-gnu-ubuntu-22.04.tar.xz"
 sha256 = "6b45be6c0483b7ee3f63981678093b731fd9f4ea6987b4ceb6efde21890ffca7"
+remove_needed = [
+  { file = "lib/x86_64-unknown-linux-gnu/libc++.so.1.0", library = "libatomic.so.1" },
+]
 
 [[source.binaries]]
 platform = "linux"
 arch = "aarch64"
 url = "https://github.com/llvm/llvm-project/releases/download/llvmorg-17.0.4/clang%2Bllvm-17.0.4-aarch64-linux-gnu.tar.xz"
 sha256 = "18b326b3e17168fc423726b5059b4d55b6070d49408e51440ad3fca2ebb37779"
+remove_needed = [
+  { file = "lib/aarch64-unknown-linux-gnu/libc++.so.1.0", library = "libatomic.so.1" },
+]
 
 [[source.binaries]]
 platform = "darwin"
