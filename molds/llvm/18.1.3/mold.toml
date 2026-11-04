@@ -24,6 +24,9 @@ platform = "linux"
 arch = "aarch64"
 url = "https://github.com/llvm/llvm-project/releases/download/llvmorg-18.1.3/clang%2Bllvm-18.1.3-aarch64-linux-gnu.tar.xz"
 sha256 = "249418a3b85326ef144349491cbcaf5bf60966d99e9fabbcd1b79edd27d9a722"
+remove_needed = [
+  { file = "lib/aarch64-unknown-linux-gnu/libc++.so.1.0", library = "libatomic.so.1" },
+]
 
 [test]
 hello_world_source = """
