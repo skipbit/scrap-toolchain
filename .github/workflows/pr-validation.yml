@@ -37,6 +37,8 @@ jobs:
         env:
           BASE_SHA: ${{ github.event.pull_request.base.sha }}
           HEAD_SHA: ${{ github.sha }}
+          # grep matches paths as bytes, whatever their encoding.
+          LC_ALL: C
         run: |
           set -euo pipefail
 
@@ -73,6 +75,16 @@ jobs:
             | grep '^molds/' \
             | sed 's|^\(molds/[^/]*/[^/]*\)/.*|\1|; s|^\(molds/[^/]*/[^/]*\)$|\1|' \
             | sort -u || true)
+
+          # Git still quotes a path with a quote, a backslash or a control
+          # character, and such a path matches none of the checks below.
+          QUOTED_PATHS=$(git_diff_names | grep '^"molds/' || true)
+          if [[ -n "$QUOTED_PATHS" ]]; then
+            while IFS= read -r quoted; do
+              echo "::error::${quoted} has characters that a mold path cannot have"
+            done <<< "$QUOTED_PATHS"
+            exit 1
+          fi
 
           # Withdrawing a toolchain keeps its mold, with status = "disabled",
           # so that the index keeps listing its ingots.
