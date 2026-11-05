@@ -1,7 +1,7 @@
 name: PR Validation
 
-# Runs on every pull request, because the validate job is a required check
-# and a required check that never reports blocks the merge.
+# Runs on every pull request so that the validate job, a required check,
+# always reports.
 on:
   pull_request:
 
@@ -67,6 +67,26 @@ jobs:
             | grep '^molds/' \
             | sed 's|^\(molds/[^/]*/[^/]*\)/.*|\1|; s|^\(molds/[^/]*/[^/]*\)$|\1|' \
             | sort -u || true)
+
+          # Withdrawing a toolchain keeps its mold, with status = "disabled",
+          # so that the index keeps listing its ingots.
+          DELETED_MOLDS=$(git diff --no-renames --name-only --diff-filter=D "${BASE_SHA}" "${HEAD_SHA}" \
+            | grep -E '^molds/[^/]+/[^/]+/mold\.toml$' || true)
+          if [[ -n "$DELETED_MOLDS" ]]; then
+            while IFS= read -r deleted; do
+              echo "::error::${deleted} is deleted. Set status = \"disabled\" to withdraw a toolchain."
+            done <<< "$DELETED_MOLDS"
+            exit 1
+          fi
+
+          # A change under molds/ belongs to a mold, or it would pass unvalidated.
+          while IFS= read -r mold; do
+            [[ -z "$mold" ]] && continue
+            if [[ ! -f "${mold}/mold.toml" ]]; then
+              echo "::error::${mold} is under molds/ but belongs to no molds/<family>/<version>/mold.toml"
+              exit 1
+            fi
+          done <<< "$MOLD_DIRS"
 
           # If infrastructure changed, validate all existing molds
           if [[ -n "$INFRA_CHANGED" ]]; then
@@ -248,6 +268,9 @@ jobs:
             elif [[ "$SOURCE_TYPE" == "build" ]]; then
               HAS_BUILD=true
               BUILD_MOLDS+=("$mold")
+            else
+              echo "::error::${mold} has an unknown source type: ${SOURCE_TYPE}"
+              exit 1
             fi
           done
 
@@ -479,8 +502,8 @@ jobs:
 
           gh pr comment "${PR_NUMBER}" --body "${BODY}"
 
-  # The required check. The names of the other jobs depend on the molds, and
-  # a job skipped because detect-changes failed must not count as passed.
+  # The required check. The names of the other jobs depend on the molds, so
+  # this job reports their results under a fixed name.
   validate:
     needs: [detect-changes, reject-unparsable-molds, validate-fetch, validate-build]
     if: always()
@@ -488,15 +511,9 @@ jobs:
     steps:
       - name: Check the results of the validation jobs
         env:
-          DETECT_RESULT: ${{ needs.detect-changes.result }}
           RESULTS: ${{ join(needs.*.result, ' ') }}
         run: |
-          echo "detect-changes: ${DETECT_RESULT}"
           echo "all jobs: ${RESULTS}"
-          if [[ "$DETECT_RESULT" != "success" ]]; then
-            echo "::error::detect-changes did not succeed"
-            exit 1
-          fi
           for result in $RESULTS; do
             if [[ "$result" != "success" && "$result" != "skipped" ]]; then
               echo "::error::A validation job ended with: ${result}"
