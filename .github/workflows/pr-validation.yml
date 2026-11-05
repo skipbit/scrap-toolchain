@@ -49,7 +49,13 @@ jobs:
             } >> "$GITHUB_OUTPUT"
           }
 
-          CHANGED_FILES=$(git diff --name-only "${BASE_SHA}" "${HEAD_SHA}")
+          # With renames off, the source of a move counts as changed. With
+          # quotepath off, non-ASCII paths come out unquoted and match below.
+          git_diff_names() {
+            git -c core.quotepath=off diff --no-renames --name-only "$@" "${BASE_SHA}" "${HEAD_SHA}"
+          }
+
+          CHANGED_FILES=$(git_diff_names)
 
           # Check if infrastructure files changed (triggers full validation of all molds).
           # Only files that directly affect mold validation are included:
@@ -70,7 +76,7 @@ jobs:
 
           # Withdrawing a toolchain keeps its mold, with status = "disabled",
           # so that the index keeps listing its ingots.
-          DELETED_MOLDS=$(git diff --no-renames --name-only --diff-filter=D "${BASE_SHA}" "${HEAD_SHA}" \
+          DELETED_MOLDS=$(git_diff_names --diff-filter=D \
             | grep -E '^molds/[^/]+/[^/]+/mold\.toml$' || true)
           if [[ -n "$DELETED_MOLDS" ]]; then
             while IFS= read -r deleted; do
@@ -79,14 +85,25 @@ jobs:
             exit 1
           fi
 
-          # A change under molds/ belongs to a mold, or it would pass unvalidated.
-          while IFS= read -r mold; do
-            [[ -z "$mold" ]] && continue
-            if [[ ! -f "${mold}/mold.toml" ]]; then
-              echo "::error::${mold} is under molds/ but belongs to no molds/<family>/<version>/mold.toml"
-              exit 1
+          # A file added or changed under molds/ belongs to a mold, or it would
+          # pass unvalidated. generate-index.sh reads every file named mold.toml,
+          # so one is allowed only directly in molds/<family>/<version>/.
+          ADDED_OR_CHANGED=$(git_diff_names --diff-filter=d | grep '^molds/' || true)
+          STRAY_PATHS=()
+          while IFS= read -r path; do
+            [[ -z "$path" ]] && continue
+            mold=$(cut -d/ -f1-3 <<< "$path")
+            if [[ "$path" != molds/*/*/* || ! -f "${mold}/mold.toml" ]] \
+              || [[ "$path" == */mold.toml && "$path" != "${mold}/mold.toml" ]]; then
+              STRAY_PATHS+=("$path")
             fi
-          done <<< "$MOLD_DIRS"
+          done <<< "$ADDED_OR_CHANGED"
+          if [[ ${#STRAY_PATHS[@]} -gt 0 ]]; then
+            for path in "${STRAY_PATHS[@]}"; do
+              echo "::error::${path} belongs to no molds/<family>/<version>/mold.toml"
+            done
+            exit 1
+          fi
 
           # If infrastructure changed, validate all existing molds
           if [[ -n "$INFRA_CHANGED" ]]; then
