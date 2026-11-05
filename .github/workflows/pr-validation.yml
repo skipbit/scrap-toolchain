@@ -1,13 +1,9 @@
 name: PR Validation
 
+# Runs on every pull request, because the validate job is a required check
+# and a required check that never reports blocks the merge.
 on:
   pull_request:
-    paths:
-      - 'molds/**'
-      - 'schema/**'
-      - 'scripts/**'
-      - 'platforms.toml'
-      - '.github/workflows/**'
 
 permissions:
   contents: read
@@ -482,3 +478,28 @@ jobs:
           See the [workflow run](${RUN_URL}) for details."
 
           gh pr comment "${PR_NUMBER}" --body "${BODY}"
+
+  # The required check. The names of the other jobs depend on the molds, and
+  # a job skipped because detect-changes failed must not count as passed.
+  validate:
+    needs: [detect-changes, reject-unparsable-molds, validate-fetch, validate-build]
+    if: always()
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Check the results of the validation jobs
+        env:
+          DETECT_RESULT: ${{ needs.detect-changes.result }}
+          RESULTS: ${{ join(needs.*.result, ' ') }}
+        run: |
+          echo "detect-changes: ${DETECT_RESULT}"
+          echo "all jobs: ${RESULTS}"
+          if [[ "$DETECT_RESULT" != "success" ]]; then
+            echo "::error::detect-changes did not succeed"
+            exit 1
+          fi
+          for result in $RESULTS; do
+            if [[ "$result" != "success" && "$result" != "skipped" ]]; then
+              echo "::error::A validation job ended with: ${result}"
+              exit 1
+            fi
+          done
