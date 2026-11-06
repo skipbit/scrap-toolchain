@@ -15,6 +15,7 @@ Exit codes:
   1 = At least one ingot cannot be fetched; each one is printed
 """
 
+import http.client
 import json
 import os
 import sys
@@ -38,11 +39,11 @@ def request(url, method="GET", headers=None):
             with urllib.request.urlopen(req, timeout=30) as response:
                 return response.status, response.read()
         except urllib.error.HTTPError as e:
-            if e.code < 500 or attempt == ATTEMPTS:
+            if (e.code < 500 and e.code != 429) or attempt == ATTEMPTS:
                 return e.code, b""
-        except urllib.error.URLError as e:
+        except (OSError, http.client.HTTPException) as e:
             if attempt == ATTEMPTS:
-                return str(e.reason), b""
+                return str(getattr(e, "reason", e)), b""
         time.sleep(5 * attempt)
 
 
@@ -92,14 +93,15 @@ def main():
             checked += 1
             place, status = check_ingot(ingot, tokens)
             if status != 200:
-                failures.append(
+                failure = (
                     f"{toolchain['family']} {toolchain['version']} "
                     f"{ingot['platform']}-{ingot['arch']}: "
                     f"{place} answered {status}"
                 )
+                failures.append(failure)
+                # Flushed so that a run stopped by its time limit keeps it.
+                print(f"::error::{failure}", flush=True)
 
-    for failure in failures:
-        print(f"::error::{failure}")
     print(f"{checked} ingots, {len(failures)} cannot be fetched")
 
     summary = os.environ.get("GITHUB_STEP_SUMMARY")
