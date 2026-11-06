@@ -1,0 +1,31 @@
+name: Index Check
+
+# Checks index.toml on main once a week. A failed run is the notice; the
+# run summary lists the ingots that cannot be fetched.
+on:
+  schedule:
+    - cron: '41 3 * * 4'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: main
+
+      - uses: actions/setup-python@v7
+        with:
+          python-version: '3.12'
+
+      - name: Check index against molds
+        run: python3 scripts/check-index.py
+
+      - name: Check that every ingot can be fetched
+        if: ${{ !cancelled() }}
+        run: python3 scripts/check-fetchable.py
