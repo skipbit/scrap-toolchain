@@ -6,15 +6,16 @@ Usage: check-index.py
 
 Checks:
   - every toolchain has a status and a license
-  - every mold is in the index, and every toolchain has a mold
-  - an active or disabled toolchain has an ingot for every environment
-    it supports
+  - every mold is in the index once, and every toolchain has one mold
+  - an active toolchain has an ingot for every environment it supports,
+    and so has a disabled toolchain unless it has no ingots at all
 
 An environment is "<platform>-<arch>". A toolchain supports the
 environments in source.platforms.supported. Without that list, a fetch
 toolchain supports the environments of its source.binaries and a build
-toolchain supports every Tier 1 environment. A build toolchain is cast
-only for Tier 1 environments.
+toolchain supports every Tier 1 environment. Only Tier 1 environments
+are cast, so a build toolchain, or a fetch binary with remove_needed,
+outside Tier 1 has no ingot.
 
 Exit codes:
   0 = The index matches the molds
@@ -34,13 +35,16 @@ def environment(entry):
 
 def load_molds(errors):
     molds = {}
-    for path in sorted(Path("molds").glob("*/*/mold.toml")):
+    for path in sorted(Path("molds").rglob("mold.toml")):
         try:
             with path.open("rb") as f:
                 mold = tomllib.load(f)
             key = (mold["metadata"]["family"], mold["metadata"]["version"])
         except (tomllib.TOMLDecodeError, KeyError) as e:
             errors.append(f"{path}: cannot be read: {e}")
+            continue
+        if key in molds:
+            errors.append(f"{path}: is a second mold for {' '.join(key)}")
             continue
         molds[key] = mold
     return molds
@@ -50,7 +54,11 @@ def supported_environments(mold, tier1):
     source = mold["source"]
     declared = set(source.get("platforms", {}).get("supported", []))
     if source["type"] == "fetch":
-        return declared or {environment(b) for b in source.get("binaries", [])}
+        binaries = source.get("binaries", [])
+        uncast = {
+            environment(b) for b in binaries if b.get("remove_needed")
+        } - tier1
+        return (declared or {environment(b) for b in binaries}) - uncast
     return (declared or tier1) & tier1
 
 
@@ -64,8 +72,8 @@ def check_toolchain(name, toolchain, mold, tier1, errors):
         errors.append(f"{name}: has no mold")
         return
 
-    if status in ("active", "disabled"):
-        ingots = {environment(i) for i in toolchain.get("ingots", [])}
+    ingots = {environment(i) for i in toolchain.get("ingots", [])}
+    if status == "active" or (status == "disabled" and ingots):
         for missing in sorted(supported_environments(mold, tier1) - ingots):
             errors.append(f"{name}: has no ingot for {missing}")
 
@@ -81,8 +89,11 @@ def main():
     listed = set()
     for toolchain in index.get("toolchains", []):
         key = (toolchain.get("family"), toolchain.get("version"))
+        name = " ".join(map(str, key))
+        if key in listed:
+            errors.append(f"{name}: is listed more than once")
         listed.add(key)
-        check_toolchain(" ".join(map(str, key)), toolchain, molds.get(key), tier1, errors)
+        check_toolchain(name, toolchain, molds.get(key), tier1, errors)
     for family, version in sorted(molds.keys() - listed):
         errors.append(f"{family} {version}: has a mold but is not in the index")
 
