@@ -82,6 +82,10 @@ jobs:
           chmod +x scripts/generate-index.sh
           scripts/generate-index.sh
 
+      # A failure here leaves index.toml unpushed.
+      - name: Check index against molds
+        run: python3 scripts/check-index.py
+
       - name: Commit and push
         env:
           GITHUB_TOKEN: ${{ steps.app-token.outputs.token }}
@@ -118,11 +122,12 @@ jobs:
               # This handles the case where another index-update run pushed between
               # our commit and push, avoiding rebase conflicts on index.toml.
               git reset --soft HEAD~1
-              git checkout -- index.toml
+              git restore --staged --worktree index.toml
               git pull --rebase
 
               chmod +x scripts/generate-index.sh
               scripts/generate-index.sh
+              python3 scripts/check-index.py
 
               if [[ -z "$(git status --porcelain -- index.toml)" ]]; then
                 echo "No changes after regeneration"
