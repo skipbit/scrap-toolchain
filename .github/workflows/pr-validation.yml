@@ -1,7 +1,7 @@
 name: PR Validation
 
-# Runs on every pull request, because the validate job is a required check
-# and a required check that never reports blocks the merge.
+# Runs on every pull request so that the validate job, a required check,
+# always reports.
 on:
   pull_request:
 
@@ -37,6 +37,8 @@ jobs:
         env:
           BASE_SHA: ${{ github.event.pull_request.base.sha }}
           HEAD_SHA: ${{ github.sha }}
+          # grep matches paths as bytes, whatever their encoding.
+          LC_ALL: C
         run: |
           set -euo pipefail
 
@@ -49,7 +51,13 @@ jobs:
             } >> "$GITHUB_OUTPUT"
           }
 
-          CHANGED_FILES=$(git diff --name-only "${BASE_SHA}" "${HEAD_SHA}")
+          # With renames off, the source of a move counts as changed. With
+          # quotepath off, non-ASCII paths come out unquoted and match below.
+          git_diff_names() {
+            git -c core.quotepath=off diff --no-renames --name-only "$@" "${BASE_SHA}" "${HEAD_SHA}"
+          }
+
+          CHANGED_FILES=$(git_diff_names)
 
           # Check if infrastructure files changed (triggers full validation of all molds).
           # Only files that directly affect mold validation are included:
@@ -67,6 +75,47 @@ jobs:
             | grep '^molds/' \
             | sed 's|^\(molds/[^/]*/[^/]*\)/.*|\1|; s|^\(molds/[^/]*/[^/]*\)$|\1|' \
             | sort -u || true)
+
+          # Git still quotes a path with a quote, a backslash or a control
+          # character, and such a path matches none of the checks below.
+          QUOTED_PATHS=$(git_diff_names | grep '^"molds/' || true)
+          if [[ -n "$QUOTED_PATHS" ]]; then
+            while IFS= read -r quoted; do
+              echo "::error::${quoted} has characters that a mold path cannot have"
+            done <<< "$QUOTED_PATHS"
+            exit 1
+          fi
+
+          # Withdrawing a toolchain keeps its mold, with status = "disabled",
+          # so that the index keeps listing its ingots.
+          DELETED_MOLDS=$(git_diff_names --diff-filter=D \
+            | grep -E '^molds/[^/]+/[^/]+/mold\.toml$' || true)
+          if [[ -n "$DELETED_MOLDS" ]]; then
+            while IFS= read -r deleted; do
+              echo "::error::${deleted} is deleted. Set status = \"disabled\" to withdraw a toolchain."
+            done <<< "$DELETED_MOLDS"
+            exit 1
+          fi
+
+          # A file added or changed under molds/ belongs to a mold, or it would
+          # pass unvalidated. generate-index.sh reads every file named mold.toml,
+          # so one is allowed only directly in molds/<family>/<version>/.
+          ADDED_OR_CHANGED=$(git_diff_names --diff-filter=d | grep '^molds/' || true)
+          STRAY_PATHS=()
+          while IFS= read -r path; do
+            [[ -z "$path" ]] && continue
+            mold=$(cut -d/ -f1-3 <<< "$path")
+            if [[ "$path" != molds/*/*/* || ! -f "${mold}/mold.toml" ]] \
+              || [[ "$path" == */mold.toml && "$path" != "${mold}/mold.toml" ]]; then
+              STRAY_PATHS+=("$path")
+            fi
+          done <<< "$ADDED_OR_CHANGED"
+          if [[ ${#STRAY_PATHS[@]} -gt 0 ]]; then
+            for path in "${STRAY_PATHS[@]}"; do
+              echo "::error::${path} belongs to no molds/<family>/<version>/mold.toml"
+            done
+            exit 1
+          fi
 
           # If infrastructure changed, validate all existing molds
           if [[ -n "$INFRA_CHANGED" ]]; then
@@ -248,6 +297,9 @@ jobs:
             elif [[ "$SOURCE_TYPE" == "build" ]]; then
               HAS_BUILD=true
               BUILD_MOLDS+=("$mold")
+            else
+              echo "::error::${mold} has an unknown source type: ${SOURCE_TYPE}"
+              exit 1
             fi
           done
 
@@ -479,8 +531,8 @@ jobs:
 
           gh pr comment "${PR_NUMBER}" --body "${BODY}"
 
-  # The required check. The names of the other jobs depend on the molds, and
-  # a job skipped because detect-changes failed must not count as passed.
+  # The required check. The names of the other jobs depend on the molds, so
+  # this job reports their results under a fixed name.
   validate:
     needs: [detect-changes, reject-unparsable-molds, validate-fetch, validate-build]
     if: always()
@@ -488,15 +540,9 @@ jobs:
     steps:
       - name: Check the results of the validation jobs
         env:
-          DETECT_RESULT: ${{ needs.detect-changes.result }}
           RESULTS: ${{ join(needs.*.result, ' ') }}
         run: |
-          echo "detect-changes: ${DETECT_RESULT}"
           echo "all jobs: ${RESULTS}"
-          if [[ "$DETECT_RESULT" != "success" ]]; then
-            echo "::error::detect-changes did not succeed"
-            exit 1
-          fi
           for result in $RESULTS; do
             if [[ "$result" != "success" && "$result" != "skipped" ]]; then
               echo "::error::A validation job ended with: ${result}"
