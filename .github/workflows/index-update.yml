@@ -122,7 +122,7 @@ jobs:
               # This handles the case where another index-update run pushed between
               # our commit and push, avoiding rebase conflicts on index.toml.
               git reset --soft HEAD~1
-              git checkout -- index.toml
+              git restore --staged --worktree index.toml
               git pull --rebase
 
               chmod +x scripts/generate-index.sh
