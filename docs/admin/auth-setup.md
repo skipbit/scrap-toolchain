@@ -80,7 +80,7 @@ Go to **Repository Settings** > **Secrets and variables** > **Actions** and add:
 
 Go to **Repository Settings** > **Rules** > **Rulesets** > **New ruleset** > **New branch ruleset**:
 
-- **Ruleset name**: `main branch protection`
+- **Ruleset name**: `main`
 - **Enforcement status**: Active
 - **Target branches**: Add target > Include default branch (`main`)
 - **Bypass list**:
@@ -89,16 +89,19 @@ Go to **Repository Settings** > **Rules** > **Rulesets** > **New ruleset** > **N
 - **Branch rules**:
   - [x] Restrict deletions
   - [x] Require a pull request before merging
-    - Required approvals: 1
+    - Required approvals: 0 (the author of a pull request cannot approve it, so with a single maintainer any higher count blocks every pull request the maintainer opens)
     - [x] Dismiss stale pull request approvals when new commits are pushed
+    - Allowed merge methods: Squash
   - [x] Require status checks to pass
     - Add required checks (after workflows are created):
-      - `validate` (from `pr-validation.yml`)
+      - `validate` (from `pr-validation.yml`), with **GitHub Actions** as its source
       - **Note**: The check name will not appear in the GitHub UI until the workflow has run at least once.
-    - [x] Require branches to be up to date before merging
+    - [ ] Require branches to be up to date before merging (the index updates push only `index.toml` to `main` and would put every open pull request out of date. A pull request that changes a mold can then merge after another one changes `schema/`, `scripts/` or `platforms.toml` without being validated against that change, so update its branch before merging it)
   - [x] Block force pushes
   - [ ] Require signed commits (not required for now)
-  - [ ] Require linear history (not required; merge commits are acceptable)
+  - [ ] Require linear history (not required; squash merging and the `git pull --rebase` in `index-update.yml` keep the history linear)
+
+Then go to **Repository Settings** > **General** > **Pull Requests** and allow only **squash merging**, so that the merge button offers only the method the ruleset accepts.
 
 ### Step 6: Verify Configuration
 
@@ -260,7 +263,7 @@ permissions:
 
 ### index-update push rejected by branch protection
 - Add the GitHub App to the ruleset bypass list
-- Go to **Settings** > **Rules** > **Rulesets** > select the `main branch protection` ruleset > **Bypass list** > **Add bypass** > select the App > set mode to **Always**
+- Go to **Settings** > **Rules** > **Rulesets** > select the `main` ruleset > **Bypass list** > **Add bypass** > select the App > set mode to **Always**
 
 ### Token generation fails
 - Verify the private key PEM format (starts with `-----BEGIN RSA PRIVATE KEY-----` or `-----BEGIN PRIVATE KEY-----`)
