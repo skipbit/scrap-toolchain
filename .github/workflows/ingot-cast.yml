@@ -141,53 +141,27 @@ jobs:
               # Source-change detection: skip metadata-only changes.
               # Only applies when INFRA_CHANGED is empty (infra changes
               # rebuild all molds regardless of their individual changes).
+              # A mold is built when scripts/mold-hash.py gives it a new
+              # hash, the same hash generate-index.sh matches ingots by.
               if [[ -z "$INFRA_CHANGED" ]]; then
-                CHECK_SCRIPT=$(mktemp)
-                trap 'rm -f "$CHECK_SCRIPT"' EXIT
-                cat > "$CHECK_SCRIPT" << 'CHECKEOF'
-          import tomllib, subprocess, sys, os
-
-          mold_dir = os.environ['MOLD_DIR_VAR']
-          before_sha = os.environ['BEFORE_SHA_VAR']
-
-          result = subprocess.run(
-              ['git', 'show', f'{before_sha}:{mold_dir}/mold.toml'],
-              capture_output=True, text=True
-          )
-          if result.returncode != 0:
-              print('true')
-              sys.exit(0)
-
-          old = tomllib.loads(result.stdout)
-          with open(f'{mold_dir}/mold.toml', 'rb') as f:
-              new = tomllib.load(f)
-
-          if (old.get('source') != new.get('source')
-              or old.get('test') != new.get('test')
-              or old.get('patches') != new.get('patches')):
-              print('true')
-          else:
-              print('false')
-          CHECKEOF
+                BEFORE_TREE=$(mktemp -d)
+                trap 'rm -rf "$BEFORE_TREE"' EXIT
 
                 while IFS= read -r mold_dir; do
                   [[ -z "$mold_dir" ]] && continue
                   [[ ! -f "${mold_dir}/mold.toml" ]] && continue
 
-                  NEEDS_BUILD=false
-
-                  if echo "$MOLD_CHANGED_FILES" | grep -q "^${mold_dir}/patches/"; then
-                    NEEDS_BUILD=true
-                  fi
-
-                  if echo "$MOLD_CHANGED_FILES" | grep -q "^${mold_dir}/mold.toml$"; then
-                    if [[ "$BEFORE_SHA" == "$NULL_SHA" ]]; then
-                      NEEDS_BUILD=true
-                    else
-                      SOURCE_CHANGED=$(MOLD_DIR_VAR="$mold_dir" BEFORE_SHA_VAR="$BEFORE_SHA" python3 "$CHECK_SCRIPT")
-                      if [[ "$SOURCE_CHANGED" == "true" ]]; then
-                        NEEDS_BUILD=true
-                      fi
+                  # A mold that did not exist before, or whose old version
+                  # cannot be hashed, is built.
+                  NEEDS_BUILD=true
+                  if [[ "$BEFORE_SHA" != "$NULL_SHA" ]] \
+                    && git archive "$BEFORE_SHA" -- "$mold_dir" 2>/dev/null \
+                      | tar -x -C "$BEFORE_TREE" 2>/dev/null \
+                    && [[ -f "${BEFORE_TREE}/${mold_dir}/mold.toml" ]]; then
+                    OLD_HASH=$(python3 scripts/mold-hash.py "${BEFORE_TREE}/${mold_dir}") || OLD_HASH=""
+                    NEW_HASH=$(python3 scripts/mold-hash.py "$mold_dir")
+                    if [[ "$OLD_HASH" == "$NEW_HASH" ]]; then
+                      NEEDS_BUILD=false
                     fi
                   fi
 
@@ -1093,10 +1067,17 @@ jobs:
             # platform from an image config, which ingots do not carry.
             echo "  Creating OCI Index: ${REPO_REF}:${VERSION}"
 
+            # The hash of the mold these ingots are built from, so that
+            # generate-index.sh can tell them from ingots of another version
+            # of the mold.
+            MOLD_HASH=$(python3 scripts/mold-hash.py "$MOLD_DIR")
+
             INDEX_FILE="${INDEX_DIR}/${FAMILY}-${VERSION}.json"
-            jq -n --argjson manifests "$INDEX_DESCRIPTORS" '{
+            jq -n --argjson manifests "$INDEX_DESCRIPTORS" \
+              --arg mold_hash "$MOLD_HASH" '{
               schemaVersion: 2,
               mediaType: "application/vnd.oci.image.index.v1+json",
+              annotations: {"org.skipbit.scrap.mold_hash": $mold_hash},
               manifests: $manifests
             }' > "$INDEX_FILE"
 
@@ -1155,11 +1136,13 @@ jobs:
               --arg version "$VERSION" \
               --arg oci_tag "${FAMILY}:${VERSION}" \
               --argjson assets "$ASSETS_JSON" \
+              --arg mold_hash "$MOLD_HASH" \
               --arg created_at "$CREATED_AT" \
               '{
                 family: $family,
                 version: $version,
                 oci_tag: $oci_tag,
+                mold_hash: $mold_hash,
                 assets: $assets,
                 created_at: $created_at
               }' > "${MANIFEST_DIR}/package-manifest-${FAMILY}-${VERSION}.json"
