@@ -1,0 +1,31 @@
+name: Probe Registry Token
+
+# Temporary: shows how ghcr.io answers the workflow token for a package
+# that exists and for one that does not.
+on:
+  pull_request:
+
+permissions:
+  contents: read
+  packages: write
+
+jobs:
+  probe:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Probe
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          for family in gcc no-such-family-probe; do
+            repo="${GITHUB_REPOSITORY}/${family}"
+            body=$(mktemp)
+            token_code=$(curl -s -o "$body" -w '%{http_code}' -u "_:${GITHUB_TOKEN}" \
+              "https://ghcr.io/token?scope=repository:${repo}:pull")
+            token=$(jq -r '.token // empty' "$body")
+            manifest_code=$(curl -s -o /dev/null -w '%{http_code}' \
+              -H "Authorization: Bearer ${token}" \
+              -H "Accept: application/vnd.oci.image.index.v1+json" \
+              "https://ghcr.io/v2/${repo}/manifests/11.1.0")
+            echo "${family}: token ${token_code}, manifest ${manifest_code}"
+          done
