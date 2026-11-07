@@ -51,6 +51,7 @@ jobs:
           BEFORE_SHA: ${{ github.event.before }}
           CURRENT_SHA: ${{ github.sha }}
           MOLD_PATH_INPUT: ${{ inputs.mold_path }}
+          GITHUB_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
 
@@ -78,19 +79,13 @@ jobs:
             fi
             CHANGED_MOLDS=("$MOLD_PATH")
           else
-            # Push event: detect changes via git diff
+            # Push event: infrastructure changes come from git diff
             # Guard against null SHA on initial push
             NULL_SHA="0000000000000000000000000000000000000000"
             if [[ "$BEFORE_SHA" == "$NULL_SHA" ]]; then
               ALL_CHANGED_FILES=$(git ls-tree -r --name-only HEAD)
             else
               ALL_CHANGED_FILES=$(git diff --name-only "${BEFORE_SHA}..${CURRENT_SHA}" || true)
-            fi
-
-            if [[ -z "$ALL_CHANGED_FILES" ]]; then
-              echo "No changes detected"
-              no_targets
-              exit 0
             fi
 
             # Check for infrastructure changes that affect all molds.
@@ -105,15 +100,6 @@ jobs:
             # version from a different build for no gain; use
             # workflow_dispatch to rebuild a mold on purpose.
             INFRA_CHANGED=$(echo "$ALL_CHANGED_FILES" | grep -E '^(platforms\.toml|scripts/cast-ingot\.sh|scripts/remove-needed\.sh)$' || true)
-
-            # Extract mold-specific changes
-            MOLD_CHANGED_FILES=$(echo "$ALL_CHANGED_FILES" | grep '^molds/' || true)
-
-            if [[ -z "$INFRA_CHANGED" ]] && [[ -z "$MOLD_CHANGED_FILES" ]]; then
-              echo "No relevant changes detected (no mold or infrastructure changes)"
-              no_targets
-              exit 0
-            fi
 
             CHANGED_MOLDS=()
 
@@ -130,58 +116,18 @@ jobs:
                 [[ -z "$mold_dir" ]] && continue
                 CHANGED_MOLDS+=("$mold_dir")
               done <<< "$ALL_MOLD_DIRS"
-            fi
-
-            # --- Mold-specific changes: add individually changed molds ---
-            if [[ -n "$MOLD_CHANGED_FILES" ]]; then
-              MOLD_DIRS=$(echo "$MOLD_CHANGED_FILES" \
-                | sed 's|^\(molds/[^/]*/[^/]*\)/.*|\1|; s|^\(molds/[^/]*/[^/]*\)$|\1|' \
-                | sort -u)
-
-              # Source-change detection: skip metadata-only changes.
-              # Only applies when INFRA_CHANGED is empty (infra changes
-              # rebuild all molds regardless of their individual changes).
-              # A mold is built when scripts/mold-hash.py gives it a new
-              # hash, the same hash generate-index.sh matches ingots by.
-              if [[ -z "$INFRA_CHANGED" ]]; then
-                BEFORE_TREE=$(mktemp -d)
-                trap 'rm -rf "$BEFORE_TREE"' EXIT
-
-                while IFS= read -r mold_dir; do
-                  [[ -z "$mold_dir" ]] && continue
-                  [[ ! -f "${mold_dir}/mold.toml" ]] && continue
-
-                  # A mold that did not exist before, or whose old version
-                  # cannot be hashed, is built.
-                  NEEDS_BUILD=true
-                  if [[ "$BEFORE_SHA" != "$NULL_SHA" ]] \
-                    && git archive "$BEFORE_SHA" -- "$mold_dir" 2>/dev/null \
-                      | tar -x -C "$BEFORE_TREE" 2>/dev/null \
-                    && [[ -f "${BEFORE_TREE}/${mold_dir}/mold.toml" ]]; then
-                    OLD_HASH=$(python3 scripts/mold-hash.py "${BEFORE_TREE}/${mold_dir}") || OLD_HASH=""
-                    NEW_HASH=$(python3 scripts/mold-hash.py "$mold_dir")
-                    if [[ "$OLD_HASH" == "$NEW_HASH" ]]; then
-                      NEEDS_BUILD=false
-                    fi
-                  fi
-
-                  if [[ "$NEEDS_BUILD" == "true" ]]; then
-                    CHANGED_MOLDS+=("$mold_dir")
-                  else
-                    echo "Skipping ${mold_dir}: no source/patches changes"
-                  fi
-                done <<< "$MOLD_DIRS"
-              else
-                # INFRA_CHANGED is set — all molds already included above.
-                # Individual mold changes are redundant (union is handled
-                # by dedup below).
-                :
-              fi
-            fi
-
-            # Deduplicate (infra + individual mold changes may overlap)
-            if [[ ${#CHANGED_MOLDS[@]} -gt 0 ]]; then
-              mapfile -t CHANGED_MOLDS < <(printf '%s\n' "${CHANGED_MOLDS[@]}" | sort -u)
+            else
+              # A mold is built when its OCI Index does not carry the hash
+              # scripts/mold-hash.py gives it now. This covers a changed
+              # mold and a mold that a cancelled or failed cast left
+              # behind; a metadata-only change keeps the hash. The step
+              # stops when the registry cannot be read, and the next cast
+              # compares again.
+              STALE_MOLDS=$(python3 scripts/stale-molds.py)
+              while IFS= read -r mold_dir; do
+                [[ -z "$mold_dir" ]] && continue
+                CHANGED_MOLDS+=("$mold_dir")
+              done <<< "$STALE_MOLDS"
             fi
           fi
 
