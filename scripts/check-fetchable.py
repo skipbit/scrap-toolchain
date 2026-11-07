@@ -53,10 +53,11 @@ def registry_reference(ingot):
     return host, f"{namespace}/{name}"
 
 
-def pull_token(host, repository, tokens):
+def pull_token(host, repository, tokens, headers=None):
     if (host, repository) not in tokens:
         scope = urllib.parse.quote(f"repository:{repository}:pull")
-        status, body = request(f"https://{host}/token?scope={scope}")
+        status, body = request(f"https://{host}/token?scope={scope}",
+                               headers=headers)
         tokens[(host, repository)] = (
             json.loads(body)["token"] if status == 200 else None
         )
