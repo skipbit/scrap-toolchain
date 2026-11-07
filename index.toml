@@ -1,6 +1,6 @@
 [index]
 schema_version = 1
-generated_at = "2026-11-07T14:31:42Z"
+generated_at = "2026-11-07T22:53:27Z"
 generator = "scripts/generate-index.sh"
 
 [[toolchains]]
