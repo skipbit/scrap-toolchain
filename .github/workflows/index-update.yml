@@ -1,11 +1,9 @@
 name: Index Update
 
-# Trigger: a successful ingot-cast run, or manual dispatch.
-# The index takes its values from the molds and its ingots from the
-# registry, so after a failed or cancelled cast it would pair new values
-# with old ingots. Metadata-only changes (e.g., status: deprecated) skip
-# the builds, and the cast still succeeds. Dispatch manually only after
-# the cast of the current molds has succeeded.
+# Trigger: ingot-cast completion on main (any conclusion) or manual dispatch.
+# Runs on every conclusion so that the molds a failed run did publish still
+# reach the index. Runs on other branches are skipped: their ingots come
+# from molds that are not on main.
 on:
   workflow_run:
     workflows: ['Ingot Cast']
@@ -24,7 +22,7 @@ jobs:
   update-index:
     if: >-
       github.event_name == 'workflow_dispatch'
-      || github.event.workflow_run.conclusion == 'success'
+      || github.event.workflow_run.head_branch == 'main'
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     steps:
@@ -69,6 +67,7 @@ jobs:
         run: |
           echo "Triggering run: ${TRIGGERING_RUN_ID}"
           if [[ -d artifacts ]]; then
+            echo "ARTIFACT_DIR=artifacts" >> "$GITHUB_ENV"
             echo "Artifact files:"
             find artifacts/ -type f -name '*.json' | sort
           else
@@ -80,12 +79,6 @@ jobs:
           GITHUB_TOKEN: ${{ steps.app-token.outputs.token }}
           GITHUB_REPOSITORY: ${{ github.repository }}
         run: |
-          ARTIFACT_DIR=""
-          if [[ -d artifacts ]]; then
-            ARTIFACT_DIR="artifacts"
-          fi
-          export ARTIFACT_DIR
-
           chmod +x scripts/generate-index.sh
           scripts/generate-index.sh
 
@@ -108,13 +101,6 @@ jobs:
 
           git add index.toml
           git commit -m "chore: update index.toml"
-
-          # Determine ARTIFACT_DIR for potential regeneration on retry.
-          ARTIFACT_DIR=""
-          if [[ -d "artifacts" ]]; then
-            ARTIFACT_DIR="artifacts"
-          fi
-          export ARTIFACT_DIR
 
           MAX_RETRIES=3
           for attempt in $(seq 1 "$MAX_RETRIES"); do
