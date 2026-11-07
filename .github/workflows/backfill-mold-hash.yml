@@ -1,0 +1,94 @@
+name: Backfill Mold Hash
+
+# Adds org.skipbit.scrap.mold_hash to the OCI Indexes cast before Ingot
+# Cast recorded it, so that generate-index.sh can match their ingots to
+# the molds. Only the index annotations change; the ingots and their
+# digests stay. Dispatch with dry_run first and read the plan.
+on:
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: 'Print the plan without pushing'
+        type: boolean
+        default: true
+
+# Shares the group with Ingot Cast, so that no tag moves while it is read
+# and pushed. Dispatch while no cast is running or queued.
+concurrency:
+  group: ingot-cast
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+  actions: read
+  packages: write
+
+jobs:
+  backfill:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: main
+          fetch-depth: 0
+
+      - uses: actions/setup-python@v7
+        with:
+          python-version: '3.12'
+
+      - name: Plan
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: python3 scripts/backfill-mold-hash.py planned-indexes
+
+      - name: Set up oras
+        if: ${{ !inputs.dry_run }}
+        uses: oras-project/setup-oras@v2
+        with:
+          version: '1.2.2'
+
+      - name: Log in to ghcr.io
+        if: ${{ !inputs.dry_run }}
+        env:
+          GHCR_TOKEN: ${{ github.token }}
+          GHCR_USER: ${{ github.actor }}
+        run: echo "$GHCR_TOKEN" | oras login ghcr.io -u "$GHCR_USER" --password-stdin
+
+      # Pushes each planned index and reads it back. A tag whose children
+      # changed since the plan is skipped, so a cast in between is kept.
+      - name: Push
+        if: ${{ !inputs.dry_run }}
+        env:
+          REGISTRY: ghcr.io/${{ github.repository }}
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          pushed=0
+          failed=0
+          for planned in planned-indexes/*/*.json; do
+            family=$(basename "$(dirname "$planned")")
+            version=$(basename "$planned" .json)
+            ref="${REGISTRY}/${family}:${version}"
+            children=$(jq -c '[.manifests[].digest]' "$planned")
+
+            if ! oras manifest fetch "$ref" \
+              | jq -e --argjson c "$children" '[.manifests[].digest] == $c' >/dev/null; then
+              echo "::error::${family} ${version}: the tag changed since the plan; skipped"
+              failed=$((failed + 1))
+              continue
+            fi
+
+            oras manifest push "$ref" "$planned" \
+              --media-type "application/vnd.oci.image.index.v1+json"
+
+            if oras manifest fetch "$ref" \
+              | jq -e --slurpfile p "$planned" '. == $p[0]' >/dev/null; then
+              pushed=$((pushed + 1))
+            else
+              echo "::error::${family} ${version}: does not read back as pushed"
+              failed=$((failed + 1))
+            fi
+          done
+          echo "${pushed} pushed, ${failed} failed"
+          [[ "$failed" -eq 0 ]]
