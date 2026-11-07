@@ -353,6 +353,30 @@ collect_cast_fetch_ingots() {
     echo "$ingots"
 }
 
+# --- Hash of the mold that the registry ingots were built from ---
+# Read from the same place as collect_build_ingots reads the ingots: the
+# package-manifest when it lists assets, the OCI Index otherwise. Empty
+# when nothing records it, as for ingots cast before it was recorded.
+# Args: $1 = family, $2 = version
+# Output: "sha256:<hex>" or nothing on stdout
+recorded_mold_hash() {
+    local family="$1" version="$2"
+    local manifest="${ARTIFACT_DIR}/package-manifest-${family}-${version}.json"
+    local asset_count=0
+    if [[ -n "$ARTIFACT_DIR" && -f "$manifest" ]]; then
+        asset_count=$(jq '.assets | length' "$manifest" 2>/dev/null) || asset_count=0
+    fi
+    if [[ "$asset_count" -gt 0 ]]; then
+        jq -r '.mold_hash // empty' "$manifest" 2>/dev/null || true
+    elif [[ "$OCI_API_AVAILABLE" == "true" ]]; then
+        local index_manifest
+        if index_manifest=$(oci_api_call "${GITHUB_REPOSITORY}/${family}" "manifests/${version}"); then
+            jq -r '.annotations["org.skipbit.scrap.mold_hash"] // empty' \
+                <<< "$index_manifest" 2>/dev/null || true
+        fi
+    fi
+}
+
 # --- Step 1: Scan molds ---
 echo -e "${BOLD}1. Scan molds${RESET}"
 
@@ -412,6 +436,7 @@ MOLD_ERRORS=0
 MOLD_PROCESSED=0
 MOLD_DISABLED=0
 MOLD_DISABLED_NO_INGOTS=0
+MOLD_KEPT=0
 
 for mold_path in "${MOLD_PATHS[@]}"; do
     # Parse mold.toml
@@ -456,6 +481,31 @@ json.dump(data, sys.stdout)
     min_scrap=$(jq -r '.metadata.min_scrap_version // empty' <<< "$mold_json")
 
     info "Processing: ${family} ${version} (${source_type}, ${status})"
+
+    # Registry ingots built from another version of this mold would be
+    # listed with the values of this one. Keep the entry the index has
+    # until a cast of this version succeeds.
+    if [[ "$source_type" == "build" ]] \
+        || jq -e '[.source.binaries[]? | select(.remove_needed)] | length > 0' \
+            <<< "$mold_json" >/dev/null; then
+        recorded_hash=$(recorded_mold_hash "$family" "$version")
+        current_hash=$(python3 scripts/mold-hash.py "$(dirname "$mold_path")")
+        if [[ -n "$recorded_hash" && "$recorded_hash" != "$current_hash" ]]; then
+            MOLD_KEPT=$((MOLD_KEPT + 1))
+            existing_entry=$(jq -c --arg f "$family" --arg v "$version" \
+                'first(.toolchains[]? | select(.family == $f and .version == $v)) // empty' \
+                <<< "$EXISTING_INDEX_JSON")
+            if [[ -n "$existing_entry" ]]; then
+                warn "${family} ${version}: registry ingots are from another version of the mold; kept the current entry"
+                TOOLCHAINS_JSON=$(jq --argjson tc "$existing_entry" '. + [$tc]' <<< "$TOOLCHAINS_JSON")
+                MOLD_PROCESSED=$((MOLD_PROCESSED + 1))
+            else
+                warn "${family} ${version}: registry ingots are from another version of the mold; left out of the index"
+            fi
+            add_summary "- :warning: ${family} ${version}: registry ingots are from another version of the mold"
+            continue
+        fi
+    fi
 
     # Collect ingots based on source type
     if [[ "$source_type" == "fetch" ]]; then
@@ -608,7 +658,7 @@ print('\n'.join(lines) + '\n')
 mv "${TMPDIR_INDEX}/index.toml" "$INDEX_FILE"
 
 pass "Generated ${INDEX_FILE}"
-info "Toolchains: ${MOLD_PROCESSED} (disabled: ${MOLD_DISABLED}), Errors: ${MOLD_ERRORS}"
+info "Toolchains: ${MOLD_PROCESSED} (disabled: ${MOLD_DISABLED}), Errors: ${MOLD_ERRORS}, Kept: ${MOLD_KEPT}"
 echo ""
 
 # --- Summary ---

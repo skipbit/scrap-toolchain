@@ -141,6 +141,8 @@ jobs:
               # Source-change detection: skip metadata-only changes.
               # Only applies when INFRA_CHANGED is empty (infra changes
               # rebuild all molds regardless of their individual changes).
+              # scripts/mold-hash.py hashes the same parts of a mold; change
+              # the two together.
               if [[ -z "$INFRA_CHANGED" ]]; then
                 CHECK_SCRIPT=$(mktemp)
                 trap 'rm -f "$CHECK_SCRIPT"' EXIT
@@ -1093,10 +1095,17 @@ jobs:
             # platform from an image config, which ingots do not carry.
             echo "  Creating OCI Index: ${REPO_REF}:${VERSION}"
 
+            # The hash of the mold these ingots are built from, so that
+            # generate-index.sh can tell them from ingots of another version
+            # of the mold.
+            MOLD_HASH=$(python3 scripts/mold-hash.py "$MOLD_DIR")
+
             INDEX_FILE="${INDEX_DIR}/${FAMILY}-${VERSION}.json"
-            jq -n --argjson manifests "$INDEX_DESCRIPTORS" '{
+            jq -n --argjson manifests "$INDEX_DESCRIPTORS" \
+              --arg mold_hash "$MOLD_HASH" '{
               schemaVersion: 2,
               mediaType: "application/vnd.oci.image.index.v1+json",
+              annotations: {"org.skipbit.scrap.mold_hash": $mold_hash},
               manifests: $manifests
             }' > "$INDEX_FILE"
 
@@ -1155,11 +1164,13 @@ jobs:
               --arg version "$VERSION" \
               --arg oci_tag "${FAMILY}:${VERSION}" \
               --argjson assets "$ASSETS_JSON" \
+              --arg mold_hash "$MOLD_HASH" \
               --arg created_at "$CREATED_AT" \
               '{
                 family: $family,
                 version: $version,
                 oci_tag: $oci_tag,
+                mold_hash: $mold_hash,
                 assets: $assets,
                 created_at: $created_at
               }' > "${MANIFEST_DIR}/package-manifest-${FAMILY}-${VERSION}.json"
