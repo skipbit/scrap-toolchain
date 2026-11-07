@@ -4,13 +4,11 @@
 Usage: mold-hash.py <mold directory>
 
 The hash covers the source, test and patches tables of mold.toml and
-the files under patches/: the parts whose change makes Ingot Cast build
-the mold again; detect-build-targets in ingot-cast.yml compares the same
-parts. Ingot Cast records the hash with the ingots, and
-generate-index.sh compares it with the mold on main, so that the index
-does not pair the values of a mold with ingots built from another
-version of it. The metadata table is left out, because a change to it
-alone is not built.
+the files under patches/. Ingot Cast builds a mold again when its hash
+changes, and records the hash with the ingots. generate-index.sh
+compares it with the mold on main, so that the index does not pair the
+values of a mold with ingots built from another version of it. The
+metadata table is left out, so a change to it alone is not built.
 
 Prints "sha256:<hex>".
 """

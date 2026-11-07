@@ -180,13 +180,16 @@ print('generator = \"scripts/generate-index.sh\"')
 
 # --- Collect build-type ingots from package-manifest + ingot-metadata ---
 # Produces OCI reference entries (registry, tag, digest) for build-type molds.
-# Checks ARTIFACT_DIR first, then falls back to OCI Registry API.
+# Checks ARTIFACT_DIR first, then falls back to OCI Registry API. The hash of
+# the mold the ingots were built from is read from the same place, empty when
+# nothing records it, as for ingots cast before it was recorded.
 # Args: $1 = family, $2 = version
-# Output: JSON array of ingot objects on stdout
+# Output: {"mold_hash": "...", "ingots": [...]} on stdout
 collect_build_ingots() {
     local family="$1" version="$2"
     local oci_tag="${family}:${version}"
     local ingots="[]"
+    local mold_hash=""
     local registry="ghcr.io/${GITHUB_REPOSITORY}"
 
     # Priority 1: package-manifest + ingot-metadata in ARTIFACT_DIR
@@ -195,6 +198,7 @@ collect_build_ingots() {
         if [[ -f "$manifest" ]]; then
             local asset_count
             asset_count=$(jq '.assets | length' "$manifest" 2>/dev/null) || asset_count=0
+            mold_hash=$(jq -r '.mold_hash // empty' "$manifest" 2>/dev/null) || mold_hash=""
 
             local i
             for ((i = 0; i < asset_count; i++)); do
@@ -238,10 +242,13 @@ collect_build_ingots() {
     ingot_count_fb=$(jq 'length' <<< "$ingots" 2>/dev/null) || ingot_count_fb=0
     if [[ "$ingot_count_fb" -eq 0 && "$OCI_API_AVAILABLE" == "true" ]]; then
         local repo_path="${GITHUB_REPOSITORY}/${family}"
+        mold_hash=""
 
         # Get the OCI Index manifest for this tag
         local index_manifest
         if index_manifest=$(oci_api_call "$repo_path" "manifests/${version}"); then
+            mold_hash=$(jq -r '.annotations["org.skipbit.scrap.mold_hash"] // empty' \
+                <<< "$index_manifest" 2>/dev/null) || mold_hash=""
             # Verify this is an OCI Index (has .manifests array), not a single manifest.
             # A single-platform manifest has .config + .layers but no .manifests.
             if ! jq -e 'has("manifests")' <<< "$index_manifest" >/dev/null 2>&1; then
@@ -286,7 +293,8 @@ collect_build_ingots() {
         fi
     fi
 
-    echo "$ingots"
+    jq -n --arg mold_hash "$mold_hash" --argjson ingots "$ingots" \
+        '{mold_hash: $mold_hash, ingots: $ingots}'
 }
 
 # --- Collect fetch-type ingots from mold.toml ---
@@ -315,10 +323,11 @@ collect_fetch_ingots() {
 # registry like build-type ingots, and the upstream archive is never listed
 # in their place. A platform missing from the registry keeps the registry
 # entry of the current index, or is left out.
-# Args: $1 = mold JSON, $2 = family, $3 = version
+# Args: $1 = mold JSON, $2 = family, $3 = version,
+#       $4 = registry ingots (JSON array, from collect_build_ingots)
 # Output: JSON array of ingot objects on stdout
 collect_cast_fetch_ingots() {
-    local mold_json="$1" family="$2" version="$3"
+    local mold_json="$1" family="$2" version="$3" registry_ingots="$4"
     local cast_ids
     cast_ids=$(jq -c '[.source.binaries[] | select(.remove_needed) | {platform, arch}]' <<< "$mold_json")
     if [[ "$cast_ids" == "[]" ]]; then
@@ -326,8 +335,7 @@ collect_cast_fetch_ingots() {
         return
     fi
 
-    local registry_ingots existing_ingots="[]" ingots
-    registry_ingots=$(collect_build_ingots "$family" "$version")
+    local existing_ingots="[]" ingots
     if [[ -n "$EXISTING_INDEX_JSON" ]]; then
         existing_ingots=$(jq --arg f "$family" --arg v "$version" \
             '[.toolchains[]? | select(.family == $f and .version == $v) | .ingots[]? | select(has("registry"))]' \
@@ -351,30 +359,6 @@ collect_cast_fetch_ingots() {
         warn "${family} ${version} ${id}: not in the registry; left out of the index" >&2
     done
     echo "$ingots"
-}
-
-# --- Hash of the mold that the registry ingots were built from ---
-# Read from the same place as collect_build_ingots reads the ingots: the
-# package-manifest when it lists assets, the OCI Index otherwise. Empty
-# when nothing records it, as for ingots cast before it was recorded.
-# Args: $1 = family, $2 = version
-# Output: "sha256:<hex>" or nothing on stdout
-recorded_mold_hash() {
-    local family="$1" version="$2"
-    local manifest="${ARTIFACT_DIR}/package-manifest-${family}-${version}.json"
-    local asset_count=0
-    if [[ -n "$ARTIFACT_DIR" && -f "$manifest" ]]; then
-        asset_count=$(jq '.assets | length' "$manifest" 2>/dev/null) || asset_count=0
-    fi
-    if [[ "$asset_count" -gt 0 ]]; then
-        jq -r '.mold_hash // empty' "$manifest" 2>/dev/null || true
-    elif [[ "$OCI_API_AVAILABLE" == "true" ]]; then
-        local index_manifest
-        if index_manifest=$(oci_api_call "${GITHUB_REPOSITORY}/${family}" "manifests/${version}"); then
-            jq -r '.annotations["org.skipbit.scrap.mold_hash"] // empty' \
-                <<< "$index_manifest" 2>/dev/null || true
-        fi
-    fi
 }
 
 # --- Step 1: Scan molds ---
@@ -483,26 +467,43 @@ json.dump(data, sys.stdout)
     info "Processing: ${family} ${version} (${source_type}, ${status})"
 
     # Registry ingots built from another version of this mold would be
-    # listed with the values of this one. Keep the entry the index has
-    # until a cast of this version succeeds.
+    # listed with the values of this one, and so would the current ingots
+    # when the registry cannot be read. In both cases keep the entry the
+    # index has. Only the status is taken from the mold: it says whether to
+    # offer the version, not what was built.
+    registry_ingots="[]"
     if [[ "$source_type" == "build" ]] \
         || jq -e '[.source.binaries[]? | select(.remove_needed)] | length > 0' \
             <<< "$mold_json" >/dev/null; then
-        recorded_hash=$(recorded_mold_hash "$family" "$version")
+        registry_read=$(collect_build_ingots "$family" "$version")
+        registry_ingots=$(jq -c '.ingots' <<< "$registry_read")
+        recorded_hash=$(jq -r '.mold_hash' <<< "$registry_read")
         current_hash=$(python3 scripts/mold-hash.py "$(dirname "$mold_path")")
+        existing_entry=$(jq -c --arg f "$family" --arg v "$version" --arg status "$status" \
+            'first(.toolchains[]? | select(.family == $f and .version == $v))
+             | .status = $status' \
+            <<< "$EXISTING_INDEX_JSON")
+
+        keep_reason=""
         if [[ -n "$recorded_hash" && "$recorded_hash" != "$current_hash" ]]; then
+            keep_reason="registry ingots are from another version of the mold"
+        elif [[ "$registry_ingots" == "[]" && -n "$existing_entry" ]]; then
+            keep_reason="registry ingots cannot be read"
+        fi
+
+        if [[ -n "$keep_reason" ]]; then
             MOLD_KEPT=$((MOLD_KEPT + 1))
-            existing_entry=$(jq -c --arg f "$family" --arg v "$version" \
-                'first(.toolchains[]? | select(.family == $f and .version == $v)) // empty' \
-                <<< "$EXISTING_INDEX_JSON")
             if [[ -n "$existing_entry" ]]; then
-                warn "${family} ${version}: registry ingots are from another version of the mold; kept the current entry"
+                warn "${family} ${version}: ${keep_reason}; kept the current entry"
                 TOOLCHAINS_JSON=$(jq --argjson tc "$existing_entry" '. + [$tc]' <<< "$TOOLCHAINS_JSON")
                 MOLD_PROCESSED=$((MOLD_PROCESSED + 1))
+                if [[ "$status" == "disabled" ]]; then
+                    MOLD_DISABLED=$((MOLD_DISABLED + 1))
+                fi
             else
-                warn "${family} ${version}: registry ingots are from another version of the mold; left out of the index"
+                warn "${family} ${version}: ${keep_reason}; left out of the index"
             fi
-            add_summary "- :warning: ${family} ${version}: registry ingots are from another version of the mold"
+            add_summary "- :warning: ${family} ${version}: ${keep_reason}"
             continue
         fi
     fi
@@ -512,7 +513,7 @@ json.dump(data, sys.stdout)
         # Fetch type: upstream URLs from mold.toml, and OCI references for
         # the binaries that remove DT_NEEDED entries
         upstream_ingots=$(collect_fetch_ingots "$mold_json")
-        cast_ingots=$(collect_cast_fetch_ingots "$mold_json" "$family" "$version")
+        cast_ingots=$(collect_cast_fetch_ingots "$mold_json" "$family" "$version" "$registry_ingots")
         if ! ingots=$(jq -n --argjson upstream "$upstream_ingots" --argjson cast "$cast_ingots" \
             '($upstream | map(. + {origin: "upstream"})) + ($cast | map(. + {origin: "scrap-release"}))'); then
             warn "Failed to collect the ingots of ${mold_path}; skipping"
@@ -521,22 +522,8 @@ json.dump(data, sys.stdout)
         fi
         info "Fetch type: reading upstream URLs from mold.toml"
     elif [[ "$source_type" == "build" ]]; then
-        # Build type: collect OCI references
-        ingots=$(collect_build_ingots "$family" "$version")
-
-        # Build type: preserve existing entries on API failure
-        ingot_count=$(jq 'length' <<< "$ingots" 2>/dev/null) || ingot_count=0
-        if [[ "$ingot_count" -eq 0 && -n "$EXISTING_INDEX_JSON" ]]; then
-            existing_ingots=$(jq --arg f "$family" --arg v "$version" \
-                '[.toolchains[]? | select(.family == $f and .version == $v) | .ingots[]?] // []' \
-                <<< "$EXISTING_INDEX_JSON" 2>/dev/null) || true
-            existing_count=$(jq 'length' <<< "$existing_ingots" 2>/dev/null) || existing_count=0
-            if [[ -n "$existing_ingots" && "$existing_count" -gt 0 ]]; then
-                ingots="$existing_ingots"
-                info "Preserved existing ingot(s) from current index"
-            fi
-        fi
-        ingots=$(jq 'map(. + {origin: "scrap-release"})' <<< "$ingots")
+        # Build type: OCI references
+        ingots=$(jq 'map(. + {origin: "scrap-release"})' <<< "$registry_ingots")
     else
         warn "Unknown source type '${source_type}' in ${mold_path}; skipping"
         MOLD_ERRORS=$((MOLD_ERRORS + 1))
