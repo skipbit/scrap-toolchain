@@ -12,9 +12,12 @@ For each version whose OCI Index has no org.skipbit.scrap.mold_hash, the
 Ingot Cast run that pushed its ingots is found from their creation time.
 The hash is computed with scripts/mold-hash.py on the mold at the commit
 of that run, which is what Ingot Cast would have recorded. The OCI Index
-with the annotation added is written to <output directory>/<family>/<version>.json.
-Nothing is pushed. A version whose ingots do not match exactly one run
-is listed and left out.
+with the annotation added is written to
+<output directory>/<family>/<version>.json. Nothing is pushed.
+
+A version not cast yet is skipped. A version whose ingots cannot be
+read, or do not come from the runs of one commit, is listed and left
+out; the other versions are still planned.
 
 Exit codes:
   0 = Every version without the annotation is planned
@@ -105,55 +108,55 @@ def casts_from_registry(mold):
 
 
 def mold_hash_at(commit, mold_dir):
+    """The hash of the mold at a commit, or None when it cannot be read."""
     archive = subprocess.run(
         ["git", "archive", commit, "--", str(mold_dir)],
-        capture_output=True, check=True,
-    ).stdout
+        capture_output=True,
+    )
+    if archive.returncode != 0:
+        return None
     with tempfile.TemporaryDirectory() as tree:
-        with tarfile.open(fileobj=io.BytesIO(archive)) as tar:
+        with tarfile.open(fileobj=io.BytesIO(archive.stdout)) as tar:
             tar.extractall(tree, filter="data")
-        return subprocess.run(
+        result = subprocess.run(
             [sys.executable, "scripts/mold-hash.py", str(Path(tree) / mold_dir)],
-            capture_output=True, text=True, check=True,
-        ).stdout.strip()
+            capture_output=True, text=True,
+        )
+    return result.stdout.strip() if result.returncode == 0 else None
 
 
-def plan(mold_dir, registry, attempts):
-    """Returns the annotated OCI Index and how it was found, or a reason."""
-    with (mold_dir / "mold.toml").open("rb") as f:
-        mold = tomllib.load(f)
-    family = mold["metadata"]["family"]
-    version = mold["metadata"]["version"]
-    if not casts_from_registry(mold):
-        return None, "not cast"
-    try:
-        index = registry.manifest(family, version, INDEX_TYPE)
-    except urllib.error.HTTPError as e:
-        return None, f"no OCI Index ({e.code})"
-    if ANNOTATION in index.get("annotations", {}):
-        return None, "already annotated"
-
+def plan(mold_dir, family, index, registry, attempts):
+    """Returns the annotated OCI Index, or None and why it is left out."""
     commits = set()
+    runs = set()
     for child in index["manifests"]:
-        created = registry.manifest(family, child["digest"], MANIFEST_TYPE) \
-            .get("annotations", {}).get("org.opencontainers.image.created")
+        try:
+            manifest = registry.manifest(family, child["digest"], MANIFEST_TYPE)
+        except (OSError, ValueError) as e:
+            return None, f"{child['digest']} cannot be read: {e}"
+        created = manifest.get("annotations", {}) \
+            .get("org.opencontainers.image.created")
         if created is None:
             return None, f"{child['digest']} has no creation time"
         matches = [a for a in attempts
                    if a[0] <= time_of(created) <= a[1]]
-        if len(matches) != 1:
-            return None, f"{child['digest']} created {created} matches {len(matches)} runs"
-        commits.add((matches[0][2], matches[0][3]))
+        # Attempts of one run share its commit, and so the hash.
+        match_commits = {a[2] for a in matches}
+        if len(match_commits) != 1:
+            return None, (f"{child['digest']} created {created} matches "
+                          f"runs of {len(match_commits)} commits")
+        commits |= match_commits
+        runs |= {a[3] for a in matches}
     if len(commits) != 1:
-        return None, f"ingots come from {len(commits)} runs"
-    (commit, label), = commits
+        return None, f"ingots come from {len(commits)} commits"
+    commit, = commits
 
+    mold_hash = mold_hash_at(commit, mold_dir)
+    if mold_hash is None:
+        return None, f"the mold cannot be read at {commit[:7]}"
     annotated = dict(index)
-    annotated["annotations"] = {
-        **index.get("annotations", {}),
-        ANNOTATION: mold_hash_at(commit, mold_dir),
-    }
-    return annotated, f"{label} at {commit[:7]}"
+    annotated["annotations"] = {**index.get("annotations", {}), ANNOTATION: mold_hash}
+    return annotated, f"{', '.join(sorted(runs))} at {commit[:7]}"
 
 
 def main():
@@ -168,16 +171,37 @@ def main():
     left_out = 0
     for mold_toml in sorted(Path("molds").rglob("mold.toml")):
         mold_dir = mold_toml.parent
-        annotated, how = plan(mold_dir, registry, attempts)
-        if annotated is not None:
-            target = out / mold_dir.parent.name / f"{mold_dir.name}.json"
-            target.parent.mkdir(parents=True, exist_ok=True)
-            target.write_text(json.dumps(annotated, indent=2) + "\n")
-            planned += 1
-            print(f"{mold_dir}: {annotated['annotations'][ANNOTATION]} from {how}")
-        elif how not in ("not cast", "already annotated"):
+        with mold_toml.open("rb") as f:
+            mold = tomllib.load(f)
+        family = mold["metadata"]["family"]
+        version = mold["metadata"]["version"]
+        if not casts_from_registry(mold):
+            continue
+        try:
+            index = registry.manifest(family, version, INDEX_TYPE)
+        except urllib.error.HTTPError as e:
+            if e.code == 404:
+                # Not cast yet. Ingot Cast records the hash when it is.
+                continue
+            index, how = None, f"OCI Index cannot be read: {e}"
+        except (OSError, ValueError) as e:
+            index, how = None, f"OCI Index cannot be read: {e}"
+        if index is not None and ANNOTATION in index.get("annotations", {}):
+            continue
+
+        annotated = None
+        if index is not None:
+            annotated, how = plan(mold_dir, family, index, registry, attempts)
+        if annotated is None:
             left_out += 1
             print(f"::error::{mold_dir}: left out: {how}")
+            continue
+        # The push step takes the tag from this path.
+        target = out / family / f"{version}.json"
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(json.dumps(annotated, indent=2) + "\n")
+        planned += 1
+        print(f"{mold_dir}: {annotated['annotations'][ANNOTATION]} from {how}")
 
     print(f"{planned} planned, {left_out} left out")
     return 1 if left_out else 0
