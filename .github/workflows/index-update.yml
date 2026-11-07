@@ -1,8 +1,11 @@
 name: Index Update
 
-# Trigger: ingot-cast completion (any conclusion) or manual dispatch.
-# Runs on all conclusions including 'failure' because metadata-only changes
-# (e.g., status: deprecated) skip ingot builds but still need index reflection.
+# Trigger: a successful ingot-cast run, or manual dispatch.
+# The index takes its values from the molds and its ingots from the
+# registry, so after a failed or cancelled cast it would pair new values
+# with old ingots. Metadata-only changes (e.g., status: deprecated) skip
+# the builds, and the cast still succeeds. Dispatch manually only after
+# the cast of the current molds has succeeded.
 on:
   workflow_run:
     workflows: ['Ingot Cast']
@@ -19,6 +22,9 @@ permissions:
 
 jobs:
   update-index:
+    if: >-
+      github.event_name == 'workflow_dispatch'
+      || github.event.workflow_run.conclusion == 'success'
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     steps:
@@ -42,14 +48,12 @@ jobs:
       # Downloads all artifacts (package-manifest JSON + ingot metadata).
       # Only the JSON files are used by generate-index.sh, but selective
       # download within an artifact is not supported by download-artifact.
-      # continue-on-error handles expected scenarios where no artifacts exist:
-      #   - ingot-cast skipped builds (metadata-only changes)
-      #   - ingot-cast failed before upload-package
-      #   - Artifacts expired (retention-days: 3)
-      # In all cases, generate-index.sh falls back to OCI Registry API.
+      # When the run has no artifacts (it skipped the builds, or they
+      # expired), the download still succeeds and creates no directory.
+      # generate-index.sh falls back to the OCI Registry API for each mold
+      # whose package-manifest is absent.
       - name: Download artifacts
         if: github.event_name == 'workflow_run'
-        id: download-artifacts
         continue-on-error: true
         uses: actions/download-artifact@v8
         with:
@@ -61,12 +65,10 @@ jobs:
       - name: Report artifact status
         if: github.event_name == 'workflow_run'
         env:
-          DOWNLOAD_OUTCOME: ${{ steps.download-artifacts.outcome }}
           TRIGGERING_RUN_ID: ${{ github.event.workflow_run.id }}
         run: |
           echo "Triggering run: ${TRIGGERING_RUN_ID}"
-          echo "Artifact download: ${DOWNLOAD_OUTCOME}"
-          if [[ "${DOWNLOAD_OUTCOME}" == "success" ]]; then
+          if [[ -d artifacts ]]; then
             echo "Artifact files:"
             find artifacts/ -type f -name '*.json' | sort
           else
@@ -75,10 +77,15 @@ jobs:
 
       - name: Generate index
         env:
-          ARTIFACT_DIR: ${{ github.event_name == 'workflow_run' && steps.download-artifacts.outcome == 'success' && 'artifacts' || '' }}
           GITHUB_TOKEN: ${{ steps.app-token.outputs.token }}
           GITHUB_REPOSITORY: ${{ github.repository }}
         run: |
+          ARTIFACT_DIR=""
+          if [[ -d artifacts ]]; then
+            ARTIFACT_DIR="artifacts"
+          fi
+          export ARTIFACT_DIR
+
           chmod +x scripts/generate-index.sh
           scripts/generate-index.sh
 
