@@ -5,7 +5,7 @@ Usage: check-index.py
   Run from the repository root directory.
 
 Checks:
-  - every toolchain has a status and a license
+  - every toolchain has a status, a license and a c_compiler
   - every mold is in the index once, and every toolchain has one mold
   - an active toolchain has an ingot for every environment it supports,
     and so has a disabled toolchain unless it has no ingots at all
@@ -68,6 +68,8 @@ def check_toolchain(name, toolchain, mold, tier1, errors):
         errors.append(f"{name}: status is {status!r}")
     if not toolchain.get("license"):
         errors.append(f"{name}: has no license")
+    if not toolchain.get("c_compiler"):
+        errors.append(f"{name}: has no c_compiler")
     if mold is None:
         errors.append(f"{name}: has no mold")
         return

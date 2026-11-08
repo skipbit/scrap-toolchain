@@ -462,6 +462,7 @@ json.dump(data, sys.stdout)
     license_val=$(jq -r '.metadata.license // empty' <<< "$mold_json")
     source_type=$(jq -r '.source.type // empty' <<< "$mold_json")
     compiler=$(jq -r '.metadata.components.compiler // empty' <<< "$mold_json")
+    c_compiler=$(jq -r '.metadata.components.c_compiler // empty' <<< "$mold_json")
     min_scrap=$(jq -r '.metadata.min_scrap_version // empty' <<< "$mold_json")
 
     info "Processing: ${family} ${version} (${source_type}, ${status})"
@@ -549,6 +550,7 @@ json.dump(data, sys.stdout)
         --arg license "$license_val" \
         --arg source_type "$source_type" \
         --arg compiler "$compiler" \
+        --arg c_compiler "$c_compiler" \
         --arg min_scrap "$min_scrap" \
         --argjson ingots "$ingots" \
         '{
@@ -557,7 +559,8 @@ json.dump(data, sys.stdout)
             status: $status,
             license: $license,
             source_type: $source_type,
-            compiler: $compiler
+            compiler: $compiler,
+            c_compiler: $c_compiler
         }
         + if $min_scrap != "" then {min_scrap_version: $min_scrap} else {} end
         + {ingots: $ingots}')
@@ -613,6 +616,9 @@ for tc in toolchains:
     lines.append(f'license = \"{esc(tc[\"license\"])}\"')
     lines.append(f'source_type = \"{esc(tc[\"source_type\"])}\"')
     lines.append(f'compiler = \"{esc(tc[\"compiler\"])}\"')
+    # An entry kept from an index written before c_compiler has none.
+    if tc.get('c_compiler'):
+        lines.append(f'c_compiler = \"{esc(tc[\"c_compiler\"])}\"')
     if tc.get('min_scrap_version'):
         lines.append(f'min_scrap_version = \"{esc(tc[\"min_scrap_version\"])}\"')
 
