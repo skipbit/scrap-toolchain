@@ -10,6 +10,7 @@ description = "LLVM toolchain (Clang, LLD, libc++)"
 
 [metadata.components]
 compiler = "clang++"
+c_compiler = "clang"
 
 [source]
 type = "fetch"

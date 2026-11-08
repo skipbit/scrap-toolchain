@@ -10,6 +10,7 @@ description = "GNU Compiler Collection (GCC)"
 
 [metadata.components]
 compiler = "g++"
+c_compiler = "gcc"
 stdlib = "libstdc++"
 
 [source]

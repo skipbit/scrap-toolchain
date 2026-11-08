@@ -72,12 +72,16 @@
     },
     "components": {
       "type": "object",
-      "required": ["compiler"],
+      "required": ["compiler", "c_compiler"],
       "additionalProperties": false,
       "properties": {
         "compiler": {
           "type": "string",
           "description": "Compiler executable name (e.g., clang++, g++)"
+        },
+        "c_compiler": {
+          "type": "string",
+          "description": "C compiler executable name (e.g., clang, gcc)"
         },
         "linker": {
           "type": "string",
