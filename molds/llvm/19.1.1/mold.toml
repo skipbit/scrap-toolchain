@@ -34,12 +34,6 @@ remove_needed = [
   { file = "lib/aarch64-unknown-linux-gnu/libc++.so.1.0", library = "libatomic.so.1" },
 ]
 
-[[source.binaries]]
-platform = "darwin"
-arch = "aarch64"
-url = "https://github.com/llvm/llvm-project/releases/download/llvmorg-19.1.1/LLVM-19.1.1-macOS-ARM64.tar.xz"
-sha256 = "e00def99a6b32de61fffabd4bb85290589731f3f5cb9836fd51770256cd694dd"
-
 [test]
 hello_world_source = """
 #include <iostream>
