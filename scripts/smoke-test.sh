@@ -178,24 +178,24 @@ echo -e "${BOLD}2. Verify compiler${RESET}"
 # Fails unless bin/<name> is executable and its canonical path stays
 # within the ingot bin/ directory (catches symlink escapes).
 verify_in_bin() {
-    local path="${INGOT_ROOT}/bin/$1" real bin_real
+    local key="$1" path="${INGOT_ROOT}/bin/$2" real bin_real
     if [[ ! -x "$path" ]]; then
-        fail_msg "Compiler not found or not executable: ${path}"
+        fail_msg "${key} not found or not executable: ${path}"
         exit 1
     fi
     real=$(resolve_path "$path")
     bin_real=$(resolve_path "${INGOT_ROOT}/bin")
     if [[ "$real" != "${bin_real}/"* ]]; then
-        fail_msg "Compiler path resolves outside ingot bin/: ${real}"
+        fail_msg "${key} path resolves outside ingot bin/: ${real}"
         exit 1
     fi
-    pass "Compiler found: ${path}"
+    pass "${key} found: ${path}"
 }
 
 COMPILER_PATH="${INGOT_ROOT}/bin/${COMPILER_NAME}"
 C_COMPILER_PATH="${INGOT_ROOT}/bin/${C_COMPILER_NAME}"
-verify_in_bin "$COMPILER_NAME"
-verify_in_bin "$C_COMPILER_NAME"
+verify_in_bin compiler "$COMPILER_NAME"
+verify_in_bin c_compiler "$C_COMPILER_NAME"
 echo ""
 
 # --- Step 3: Expand compile command ---
@@ -250,9 +250,7 @@ fi
 pass "Compilation succeeded"
 echo ""
 
-# --- Step 5: Execute ---
-echo -e "${BOLD}5. Execute${RESET}"
-
+# Bounds the run of the C program (step 5) and the test program (step 6).
 TIMEOUT_CMD=""
 if command -v timeout &>/dev/null; then
     TIMEOUT_CMD="timeout"
@@ -261,6 +259,64 @@ elif command -v gtimeout &>/dev/null; then
 else
     warn "Neither 'timeout' nor 'gtimeout' found; running without timeout protection"
 fi
+
+# --- Step 5: C compiler ---
+echo -e "${BOLD}5. C compiler${RESET}"
+
+# Built as the test program is, with the same linker and no other flag,
+# and before step 6 adds the ingot lib directories to LD_LIBRARY_PATH.
+# It stops at #error when the compiler takes it for C++.
+cat > "${WORK_DIR}/hello.c" <<'C_SOURCE'
+#ifdef __cplusplus
+#error compiled as C++
+#endif
+#include <stdio.h>
+int main(void) {
+    printf("Hello, scrap!\n");
+    return 0;
+}
+C_SOURCE
+C_FLAGS=()
+if [[ " ${COMPILE_CMD} " == *" -fuse-ld=lld "* ]]; then
+    C_FLAGS+=(-fuse-ld=lld)
+fi
+info "Command: ${C_COMPILER_PATH} ${C_FLAGS[*]+${C_FLAGS[*]} }-o hello-c hello.c"
+
+set +e
+C_COMPILE_OUTPUT=$(cd "$WORK_DIR" && "$C_COMPILER_PATH" ${C_FLAGS[@]+"${C_FLAGS[@]}"} -o hello-c hello.c 2>&1)
+C_COMPILE_EXIT=$?
+set -e
+if [[ "$C_COMPILE_EXIT" -ne 0 ]]; then
+    fail_msg "C compilation failed (exit code: ${C_COMPILE_EXIT})"
+    echo "  --- compiler output ---"
+    # shellcheck disable=SC2001  # indents every line of the output
+    echo "$C_COMPILE_OUTPUT" | sed 's/^/  /'
+    echo "  ---"
+    exit 1
+fi
+
+set +e
+if [[ -n "$TIMEOUT_CMD" ]]; then
+    C_OUTPUT=$($TIMEOUT_CMD "$TIMEOUT" "${WORK_DIR}/hello-c" 2>&1)
+else
+    C_OUTPUT=$("${WORK_DIR}/hello-c" 2>&1)
+fi
+C_RUN_EXIT=$?
+set -e
+if [[ "$C_RUN_EXIT" -eq 124 && -n "$TIMEOUT_CMD" ]]; then
+    fail_msg "C program timed out after ${TIMEOUT} seconds"
+    exit 1
+fi
+if [[ "$C_RUN_EXIT" -ne 0 || "$C_OUTPUT" != "Hello, scrap!" ]]; then
+    fail_msg "C program failed (exit code: ${C_RUN_EXIT}, output: ${C_OUTPUT})"
+    exit 1
+fi
+
+pass "C program compiled with ${C_COMPILER_NAME} and ran"
+echo ""
+
+# --- Step 6: Execute ---
+echo -e "${BOLD}6. Execute${RESET}"
 
 # On Linux, add ingot lib directories to LD_LIBRARY_PATH so the test
 # binary can find libraries shipped with the toolchain (e.g., libstdc++.so
@@ -308,8 +364,8 @@ fi
 pass "Execution succeeded"
 echo ""
 
-# --- Step 6: Compare output ---
-echo -e "${BOLD}6. Compare output${RESET}"
+# --- Step 7: Compare output ---
+echo -e "${BOLD}7. Compare output${RESET}"
 
 if diff -q "${WORK_DIR}/expected" "${WORK_DIR}/actual" &>/dev/null; then
     pass "Output matches expected"
@@ -320,55 +376,6 @@ else
     echo "  ---"
     exit 1
 fi
-echo ""
-
-# --- Step 7: C compiler ---
-echo -e "${BOLD}7. C compiler${RESET}"
-
-# Built as the test program is, with the same linker and no other flag.
-# It stops at #error when the compiler takes it for C++.
-cat > "${WORK_DIR}/hello.c" <<'C_SOURCE'
-#ifdef __cplusplus
-#error compiled as C++
-#endif
-#include <stdio.h>
-int main(void) {
-    printf("Hello, scrap!\n");
-    return 0;
-}
-C_SOURCE
-C_FLAGS=()
-if [[ " ${COMPILE_CMD} " == *" -fuse-ld=lld "* ]]; then
-    C_FLAGS+=(-fuse-ld=lld)
-fi
-info "Command: ${C_COMPILER_PATH} ${C_FLAGS[*]+${C_FLAGS[*]} }-o hello-c hello.c"
-
-set +e
-C_COMPILE_OUTPUT=$(cd "$WORK_DIR" && "$C_COMPILER_PATH" ${C_FLAGS[@]+"${C_FLAGS[@]}"} -o hello-c hello.c 2>&1)
-C_COMPILE_EXIT=$?
-set -e
-if [[ "$C_COMPILE_EXIT" -ne 0 ]]; then
-    fail_msg "C compilation failed (exit code: ${C_COMPILE_EXIT})"
-    echo "  --- compiler output ---"
-    echo "$C_COMPILE_OUTPUT" | head -20 | sed 's/^/  /'
-    echo "  ---"
-    exit 1
-fi
-
-set +e
-if [[ -n "$TIMEOUT_CMD" ]]; then
-    C_OUTPUT=$($TIMEOUT_CMD "$TIMEOUT" "${WORK_DIR}/hello-c" 2>&1)
-else
-    C_OUTPUT=$("${WORK_DIR}/hello-c" 2>&1)
-fi
-C_RUN_EXIT=$?
-set -e
-if [[ "$C_RUN_EXIT" -ne 0 || "$C_OUTPUT" != "Hello, scrap!" ]]; then
-    fail_msg "C program failed (exit code: ${C_RUN_EXIT}, output: ${C_OUTPUT})"
-    exit 1
-fi
-
-pass "C program compiled with ${C_COMPILER_NAME} and ran"
 echo ""
 
 # --- Summary ---
