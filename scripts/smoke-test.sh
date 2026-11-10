@@ -3,6 +3,10 @@
 #
 # Usage: smoke-test.sh <ingot-root> <mold-directory>
 #
+# The mold's test program is built with metadata.components.compiler.
+# A C program is then built with metadata.components.c_compiler, so that
+# the name the index gives for C sources is checked as well.
+#
 # This script uses a fail-fast approach: each step exits immediately on failure
 # rather than accumulating errors, since later steps depend on earlier ones.
 #
@@ -110,10 +114,11 @@ if not test:
     print('ERROR: [test] section not found in mold.toml', file=sys.stderr)
     sys.exit(1)
 
-compiler = data.get('metadata', {}).get('components', {}).get('compiler')
-if not compiler:
-    print('ERROR: metadata.components.compiler not found', file=sys.stderr)
-    sys.exit(1)
+components = data.get('metadata', {}).get('components', {})
+for name in ('compiler', 'c_compiler'):
+    if not components.get(name):
+        print(f'ERROR: metadata.components.{name} not found', file=sys.stderr)
+        sys.exit(1)
 
 for field in ('hello_world_source', 'compile_command', 'expected_output'):
     if not test.get(field):
@@ -128,7 +133,8 @@ with open(os.path.join(work_dir, 'expected'), 'w') as f:
 
 json.dump({
     'compile_command': test['compile_command'],
-    'compiler': compiler,
+    'compiler': components['compiler'],
+    'c_compiler': components['c_compiler'],
 }, sys.stdout)
 " "$MOLD_TOML" "$WORK_DIR" 2>"${WORK_DIR}/parse_stderr")
 PARSE_EXIT=$?
@@ -142,43 +148,54 @@ fi
 
 COMPILE_CMD=$(echo "$TEST_DATA" | jq -r '.compile_command')
 COMPILER_NAME=$(echo "$TEST_DATA" | jq -r '.compiler')
+C_COMPILER_NAME=$(echo "$TEST_DATA" | jq -r '.c_compiler')
 
-if [[ -z "$COMPILE_CMD" || -z "$COMPILER_NAME" ]]; then
+if [[ -z "$COMPILE_CMD" || -z "$COMPILER_NAME" || -z "$C_COMPILER_NAME" ]]; then
     echo "Error: Incomplete test configuration"
     exit 2
 fi
 
 # Reject compiler names that could escape the bin/ directory
-if [[ "$COMPILER_NAME" == */* || "$COMPILER_NAME" == *..* ]]; then
-    echo "Error: Invalid compiler name (must not contain '/' or '..'): ${COMPILER_NAME}"
-    exit 2
-fi
-if ! [[ "$COMPILER_NAME" =~ ^[A-Za-z0-9._+-]+$ ]]; then
-    echo "Error: Invalid compiler name (unexpected characters): ${COMPILER_NAME}"
-    exit 2
-fi
+check_compiler_name() {
+    if [[ "$1" == */* || "$1" == *..* ]]; then
+        echo "Error: Invalid compiler name (must not contain '/' or '..'): $1"
+        exit 2
+    fi
+    if ! [[ "$1" =~ ^[A-Za-z0-9._+-]+$ ]]; then
+        echo "Error: Invalid compiler name (unexpected characters): $1"
+        exit 2
+    fi
+}
+check_compiler_name "$COMPILER_NAME"
+check_compiler_name "$C_COMPILER_NAME"
 
-pass "Test configuration parsed: compiler=${COMPILER_NAME}"
+pass "Test configuration parsed: compiler=${COMPILER_NAME}, c_compiler=${C_COMPILER_NAME}"
 echo ""
 
 # --- Step 2: Verify compiler exists ---
 echo -e "${BOLD}2. Verify compiler${RESET}"
 
+# Fails unless bin/<name> is executable and its canonical path stays
+# within the ingot bin/ directory (catches symlink escapes).
+verify_in_bin() {
+    local key="$1" path="${INGOT_ROOT}/bin/$2" real bin_real
+    if [[ ! -x "$path" ]]; then
+        fail_msg "${key} not found or not executable: ${path}"
+        exit 1
+    fi
+    real=$(resolve_path "$path")
+    bin_real=$(resolve_path "${INGOT_ROOT}/bin")
+    if [[ "$real" != "${bin_real}/"* ]]; then
+        fail_msg "${key} path resolves outside ingot bin/: ${real}"
+        exit 1
+    fi
+    pass "${key} found: ${path}"
+}
+
 COMPILER_PATH="${INGOT_ROOT}/bin/${COMPILER_NAME}"
-if [[ ! -x "$COMPILER_PATH" ]]; then
-    fail_msg "Compiler not found or not executable: ${COMPILER_PATH}"
-    exit 1
-fi
-
-# Verify the canonical path is within the ingot bin/ directory (catches symlink escapes)
-COMPILER_REAL=$(resolve_path "$COMPILER_PATH")
-INGOT_BIN_REAL=$(resolve_path "${INGOT_ROOT}/bin")
-if [[ "$COMPILER_REAL" != "${INGOT_BIN_REAL}/"* ]]; then
-    fail_msg "Compiler path resolves outside ingot bin/: ${COMPILER_REAL}"
-    exit 1
-fi
-
-pass "Compiler found: ${COMPILER_PATH}"
+C_COMPILER_PATH="${INGOT_ROOT}/bin/${C_COMPILER_NAME}"
+verify_in_bin compiler "$COMPILER_NAME"
+verify_in_bin c_compiler "$C_COMPILER_NAME"
 echo ""
 
 # --- Step 3: Expand compile command ---
@@ -233,9 +250,7 @@ fi
 pass "Compilation succeeded"
 echo ""
 
-# --- Step 5: Execute ---
-echo -e "${BOLD}5. Execute${RESET}"
-
+# Bounds the run of the C program (step 5) and the test program (step 6).
 TIMEOUT_CMD=""
 if command -v timeout &>/dev/null; then
     TIMEOUT_CMD="timeout"
@@ -244,6 +259,64 @@ elif command -v gtimeout &>/dev/null; then
 else
     warn "Neither 'timeout' nor 'gtimeout' found; running without timeout protection"
 fi
+
+# --- Step 5: C compiler ---
+echo -e "${BOLD}5. C compiler${RESET}"
+
+# Built as the test program is, with the same linker and no other flag,
+# and before step 6 adds the ingot lib directories to LD_LIBRARY_PATH.
+# It stops at #error when the compiler takes it for C++.
+cat > "${WORK_DIR}/hello.c" <<'C_SOURCE'
+#ifdef __cplusplus
+#error compiled as C++
+#endif
+#include <stdio.h>
+int main(void) {
+    printf("Hello, scrap!\n");
+    return 0;
+}
+C_SOURCE
+C_FLAGS=()
+if [[ " ${COMPILE_CMD} " == *" -fuse-ld=lld "* ]]; then
+    C_FLAGS+=(-fuse-ld=lld)
+fi
+info "Command: ${C_COMPILER_PATH} ${C_FLAGS[*]+${C_FLAGS[*]} }-o hello-c hello.c"
+
+set +e
+C_COMPILE_OUTPUT=$(cd "$WORK_DIR" && "$C_COMPILER_PATH" ${C_FLAGS[@]+"${C_FLAGS[@]}"} -o hello-c hello.c 2>&1)
+C_COMPILE_EXIT=$?
+set -e
+if [[ "$C_COMPILE_EXIT" -ne 0 ]]; then
+    fail_msg "C compilation failed (exit code: ${C_COMPILE_EXIT})"
+    echo "  --- compiler output ---"
+    # shellcheck disable=SC2001  # indents every line of the output
+    echo "$C_COMPILE_OUTPUT" | sed 's/^/  /'
+    echo "  ---"
+    exit 1
+fi
+
+set +e
+if [[ -n "$TIMEOUT_CMD" ]]; then
+    C_OUTPUT=$($TIMEOUT_CMD "$TIMEOUT" "${WORK_DIR}/hello-c" 2>&1)
+else
+    C_OUTPUT=$("${WORK_DIR}/hello-c" 2>&1)
+fi
+C_RUN_EXIT=$?
+set -e
+if [[ "$C_RUN_EXIT" -eq 124 && -n "$TIMEOUT_CMD" ]]; then
+    fail_msg "C program timed out after ${TIMEOUT} seconds"
+    exit 1
+fi
+if [[ "$C_RUN_EXIT" -ne 0 || "$C_OUTPUT" != "Hello, scrap!" ]]; then
+    fail_msg "C program failed (exit code: ${C_RUN_EXIT}, output: ${C_OUTPUT})"
+    exit 1
+fi
+
+pass "C program compiled with ${C_COMPILER_NAME} and ran"
+echo ""
+
+# --- Step 6: Execute ---
+echo -e "${BOLD}6. Execute${RESET}"
 
 # On Linux, add ingot lib directories to LD_LIBRARY_PATH so the test
 # binary can find libraries shipped with the toolchain (e.g., libstdc++.so
@@ -291,8 +364,8 @@ fi
 pass "Execution succeeded"
 echo ""
 
-# --- Step 6: Compare output ---
-echo -e "${BOLD}6. Compare output${RESET}"
+# --- Step 7: Compare output ---
+echo -e "${BOLD}7. Compare output${RESET}"
 
 if diff -q "${WORK_DIR}/expected" "${WORK_DIR}/actual" &>/dev/null; then
     pass "Output matches expected"
