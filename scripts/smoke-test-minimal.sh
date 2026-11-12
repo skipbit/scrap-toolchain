@@ -32,8 +32,8 @@ WORK_DIR=$(mktemp -d)
 trap 'rm -rf "$WORK_DIR"' EXIT
 
 # Writes hello.cpp, expected and command (the compile command with the
-# compiler as /ingot/bin/<compiler>) into WORK_DIR, and hello.c,
-# c_expected and c_command for the C program as smoke-test.sh builds it.
+# compiler as /ingot/bin/<compiler>) into WORK_DIR, and c_command for
+# the C program as smoke-test.sh builds it.
 python3 - "${MOLD_DIR}/mold.toml" "$WORK_DIR" <<'EOF' || exit 2
 import os, re, sys
 try:
@@ -44,19 +44,18 @@ mold, work = sys.argv[1:]
 with open(mold, 'rb') as f:
     data = tomllib.load(f)
 components = data['metadata']['components']
+for key in ('compiler', 'c_compiler'):
+    if not components.get(key):
+        sys.exit(f'metadata.components.{key} not found')
+    if not re.fullmatch(r'[A-Za-z0-9._+-]+', components[key]):
+        sys.exit(f'invalid compiler name: {components[key]}')
 compiler, c_compiler = components['compiler'], components['c_compiler']
-for name in (compiler, c_compiler):
-    if not re.fullmatch(r'[A-Za-z0-9._+-]+', name):
-        sys.exit(f'invalid compiler name: {name}')
 test = data['test']
 c_flags = ' -fuse-ld=lld' if '-fuse-ld=lld' in test['compile_command'].split() else ''
 files = {
     'hello.cpp': test['hello_world_source'],
     'expected': test['expected_output'],
     'command': test['compile_command'].replace('{compiler}', f'/ingot/bin/{compiler}') + '\n',
-    'hello.c': '#ifdef __cplusplus\n#error compiled as C++\n#endif\n#include <stdio.h>\n'
-               'int main(void) {\n    printf("Hello, scrap!\\n");\n    return 0;\n}\n',
-    'c_expected': 'Hello, scrap!\n',
     'c_command': f'/ingot/bin/{c_compiler}{c_flags} -o hello-c hello.c\n',
 }
 for name, text in files.items():
@@ -64,12 +63,26 @@ for name, text in files.items():
         f.write(text)
 EOF
 
+# The C program of smoke-test.sh, which stops at #error when the
+# compiler takes it for C++.
+cat > "${WORK_DIR}/hello.c" <<'C_SOURCE'
+#ifdef __cplusplus
+#error compiled as C++
+#endif
+#include <stdio.h>
+int main(void) {
+    printf("Hello, scrap!\n");
+    return 0;
+}
+C_SOURCE
+printf 'Hello, scrap!\n' > "${WORK_DIR}/c_expected"
+
 echo "Image: ${IMAGE}"
 echo "Command: $(cat "${WORK_DIR}/command")"
 echo "C command: $(cat "${WORK_DIR}/c_command")"
 
-# The test program runs with the ingot's libraries first and the C
-# program without them, as smoke-test.sh runs them.
+# The C program runs first and without the ingot's libraries, and the
+# test program with them, as smoke-test.sh runs them.
 set +e
 docker run --rm \
     -v "${INGOT_ROOT}:/ingot:ro" \
@@ -81,25 +94,39 @@ docker run --rm \
         export DEBIAN_FRONTEND=noninteractive
         apt-get update -qq > /dev/null
         apt-get install -y -qq --no-install-recommends libc6-dev > /dev/null
-        read -ra cmd < command
-        "${cmd[@]}"
-        LD_LIBRARY_PATH=/ingot/lib:/ingot/lib64 timeout 30 ./hello > actual
+        step() {
+            local name="$1" rc=0
+            shift
+            "$@" || rc=$?
+            if [[ "$rc" -ne 0 ]]; then
+                echo "FAIL: ${name} (exit code: ${rc})" >&2
+                exit 1
+            fi
+        }
         read -ra c_cmd < c_command
-        "${c_cmd[@]}"
-        timeout 30 ./hello-c > c_actual
+        read -ra cmd < command
+        step "compiling the C program" "${c_cmd[@]}"
+        step "running the C program" timeout 30 ./hello-c > c_actual
+        step "compiling the test program" "${cmd[@]}"
+        step "running the test program" \
+            env LD_LIBRARY_PATH=/ingot/lib:/ingot/lib64 timeout 30 ./hello > actual
     '
 RUN_EXIT=$?
 set -e
 
 if [[ "$RUN_EXIT" -ne 0 ]]; then
-    echo "FAIL: compiling or running the test or C program failed (exit code: ${RUN_EXIT})"
+    echo "FAIL: the run in ${IMAGE} failed (exit code: ${RUN_EXIT})"
     exit 1
 fi
-for prefix in "" c_; do
-    if ! cmp -s "${WORK_DIR}/${prefix}expected" "${WORK_DIR}/${prefix}actual"; then
-        echo "FAIL: output mismatch (${prefix}actual)"
-        diff "${WORK_DIR}/${prefix}expected" "${WORK_DIR}/${prefix}actual" || true
+
+check_output() {
+    local name="$1" expected="${WORK_DIR}/$2" actual="${WORK_DIR}/$3"
+    if ! cmp -s "$expected" "$actual"; then
+        echo "FAIL: output mismatch (${name})"
+        diff "$expected" "$actual" || true
         exit 1
     fi
-done
+}
+check_output "C program" c_expected c_actual
+check_output "test program" expected actual
 echo "PASS: compiled and ran in ${IMAGE} with libc6-dev only"
