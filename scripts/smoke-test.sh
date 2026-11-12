@@ -406,7 +406,7 @@ if [[ ${#LIBCXX_DIRS[@]} -gt 0 ]]; then
     INGOT_REAL=$(resolve_path "$INGOT_ROOT")
     while IFS= read -r lib; do
         if [[ "$(resolve_path "$lib")" != "${INGOT_REAL}/"* ]]; then
-            fail_msg "libc++ loaded from outside the ingot: ${lib}"
+            fail_msg "libc++ loaded from outside the ingot: ${lib} (all loaded: ${LOADED_LIBCXX//$'\n'/, })"
             exit 1
         fi
     done <<< "$LOADED_LIBCXX"
