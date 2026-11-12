@@ -33,3 +33,47 @@ jobs:
           set -e
           echo "branch: rc=${BRANCH_EXIT}, main: rc=${MAIN_EXIT}"
           [[ "$BRANCH_EXIT" -ne 0 && "$MAIN_EXIT" -eq 0 ]]
+
+  diagnose:
+    strategy:
+      fail-fast: false
+      matrix:
+        version: ['17.0.6', '22.1.8']
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v7
+      - name: Show how the test program of LLVM ${{ matrix.version }} links and loads libc++
+        env:
+          MOLD: molds/llvm/${{ matrix.version }}/mold.toml
+        run: |
+          set -euo pipefail
+          read -r URL SHA256 < <(python3 -c '
+          import sys, tomllib
+          d = tomllib.load(open(sys.argv[1], "rb"))
+          b = next(b for b in d["source"]["binaries"] if b["platform"] == "darwin")
+          print(b["url"], b["sha256"])' "$MOLD")
+          curl -sSfL -o "${RUNNER_TEMP}/llvm.tar.xz" "$URL"
+          echo "${SHA256}  ${RUNNER_TEMP}/llvm.tar.xz" | shasum -a 256 -c -
+          ING="${RUNNER_TEMP}/ingot"
+          mkdir -p "$ING"
+          tar -xJf "${RUNNER_TEMP}/llvm.tar.xz" -C "$ING" --strip-components 1
+          SDKROOT=$(xcrun --show-sdk-path)
+          export SDKROOT
+          echo "SDKROOT=${SDKROOT}"
+          echo "--- libraries in lib/"
+          find "$ING/lib" -maxdepth 1 \( -name 'libc++*' -o -name 'libunwind*' \) -exec ls -la {} +
+          echo "--- otool -D and -L of lib/libc++.1.dylib"
+          otool -D "$ING/lib/libc++.1.dylib"
+          otool -L "$ING/lib/libc++.1.dylib"
+          cd "$RUNNER_TEMP"
+          python3 -c 'import sys, tomllib; print(tomllib.load(open(sys.argv[1], "rb"))["test"]["hello_world_source"], end="")' \
+            "${GITHUB_WORKSPACE}/${MOLD}" > hello.cpp
+          echo "--- link, with the files ld reads"
+          "$ING/bin/clang++" -std=c++23 -o hello hello.cpp -L "$ING/lib" -Xlinker -rpath -Xlinker "$ING/lib" -lc++abi -Wl,-t \
+            | grep -E 'libc\+\+|unwind|libSystem' || true
+          echo "--- otool -L of hello"
+          otool -L hello
+          echo "--- LC_RPATH of hello"
+          otool -l hello | grep -A2 LC_RPATH
+          echo "--- DYLD_PRINT_LIBRARIES"
+          DYLD_PRINT_LIBRARIES=1 ./hello
