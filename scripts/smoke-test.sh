@@ -7,6 +7,10 @@
 # A C program is then built with metadata.components.c_compiler, so that
 # the name the index gives for C sources is checked as well.
 #
+# On macOS, an ingot that holds libc++ is tested as scrap builds with it:
+# linked by the system linker against that libc++, which the program
+# must then load.
+#
 # This script uses a fail-fast approach: each step exits immediately on failure
 # rather than accumulating errors, since later steps depend on earlier ones.
 #
@@ -226,6 +230,29 @@ fi
 # (e.g., "{compiler} -o hello hello.cpp"), not a shell expression.
 read -ra CMD_ARRAY <<< "$EXPANDED_CMD"
 
+# The system linker reads the SDK, which lld may not. libc++ of the
+# ingot does not re-export libc++abi.
+LIBCXX_DIRS=()
+if [[ "$(uname -s)" == "Darwin" ]]; then
+    LIBCXX_LIST=$(find "$INGOT_ROOT" -name 'libc++.1.dylib' -exec dirname {} \; | sort -u)
+    while IFS= read -r dir; do
+        if [[ -n "$dir" ]]; then
+            LIBCXX_DIRS+=("$dir")
+        fi
+    done <<< "$LIBCXX_LIST"
+fi
+if [[ ${#LIBCXX_DIRS[@]} -gt 0 ]]; then
+    SYSTEM_LINKER_CMD=()
+    for arg in "${CMD_ARRAY[@]}"; do
+        [[ "$arg" == "-fuse-ld=lld" ]] || SYSTEM_LINKER_CMD+=("$arg")
+    done
+    for dir in "${LIBCXX_DIRS[@]}"; do
+        SYSTEM_LINKER_CMD+=(-L "$dir" -Xlinker -rpath -Xlinker "$dir")
+    done
+    CMD_ARRAY=("${SYSTEM_LINKER_CMD[@]}" -lc++abi)
+    info "Command with the system linker: ${CMD_ARRAY[*]}"
+fi
+
 set +e
 COMPILE_OUTPUT=$(cd "$WORK_DIR" && "${CMD_ARRAY[@]}" 2>&1)
 COMPILE_EXIT=$?
@@ -277,7 +304,7 @@ int main(void) {
 }
 C_SOURCE
 C_FLAGS=()
-if [[ " ${COMPILE_CMD} " == *" -fuse-ld=lld "* ]]; then
+if [[ " ${CMD_ARRAY[*]} " == *" -fuse-ld=lld "* ]]; then
     C_FLAGS+=(-fuse-ld=lld)
 fi
 info "Command: ${C_COMPILER_PATH} ${C_FLAGS[*]+${C_FLAGS[*]} }-o hello-c hello.c"
@@ -362,6 +389,29 @@ if [[ "$RUN_EXIT" -ne 0 ]]; then
 fi
 
 pass "Execution succeeded"
+
+# dyld prints each library it loads as "dyld[<pid>]: <path>".
+if [[ ${#LIBCXX_DIRS[@]} -gt 0 ]]; then
+    set +e
+    if [[ -n "$TIMEOUT_CMD" ]]; then
+        $TIMEOUT_CMD "$TIMEOUT" env DYLD_PRINT_LIBRARIES=1 "${WORK_DIR}/hello" > /dev/null 2> "${WORK_DIR}/dyld"
+    else
+        DYLD_PRINT_LIBRARIES=1 "${WORK_DIR}/hello" > /dev/null 2> "${WORK_DIR}/dyld"
+    fi
+    set -e
+    if ! LOADED_LIBCXX=$(grep -o '/[^ ]*/libc++\.1\.dylib$' "${WORK_DIR}/dyld"); then
+        fail_msg "dyld did not report loading libc++.1.dylib"
+        exit 1
+    fi
+    INGOT_REAL=$(resolve_path "$INGOT_ROOT")
+    while IFS= read -r lib; do
+        if [[ "$(resolve_path "$lib")" != "${INGOT_REAL}/"* ]]; then
+            fail_msg "libc++ loaded from outside the ingot: ${lib}"
+            exit 1
+        fi
+    done <<< "$LOADED_LIBCXX"
+    pass "libc++ loaded from the ingot: ${LOADED_LIBCXX//$'\n'/, }"
+fi
 echo ""
 
 # --- Step 7: Compare output ---
