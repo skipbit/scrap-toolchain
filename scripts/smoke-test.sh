@@ -390,7 +390,9 @@ fi
 
 pass "Execution succeeded"
 
-# dyld prints each library it loads as "dyld[<pid>]: <path>".
+# dyld prints each library it loads as "dyld[<pid>]: <uuid> <path>", the
+# path being the file behind any symlink. The system libraries load the
+# libc++ of the system as well, so one from the ingot is what is required.
 if [[ ${#LIBCXX_DIRS[@]} -gt 0 ]]; then
     set +e
     if [[ -n "$TIMEOUT_CMD" ]]; then
@@ -399,18 +401,22 @@ if [[ ${#LIBCXX_DIRS[@]} -gt 0 ]]; then
         DYLD_PRINT_LIBRARIES=1 "${WORK_DIR}/hello" > /dev/null 2> "${WORK_DIR}/dyld"
     fi
     set -e
-    if ! LOADED_LIBCXX=$(grep -o '/[^ ]*/libc++\.1\.dylib$' "${WORK_DIR}/dyld"); then
-        fail_msg "dyld did not report loading libc++.1.dylib"
+    if ! LOADED_LIBCXX=$(grep -o '/[^ ]*/libc++\.[0-9.]*dylib$' "${WORK_DIR}/dyld"); then
+        fail_msg "dyld did not report loading libc++"
         exit 1
     fi
     INGOT_REAL=$(resolve_path "$INGOT_ROOT")
+    LIBCXX_FROM_INGOT=""
     while IFS= read -r lib; do
-        if [[ "$(resolve_path "$lib")" != "${INGOT_REAL}/"* ]]; then
-            fail_msg "libc++ loaded from outside the ingot: ${lib} (all loaded: ${LOADED_LIBCXX//$'\n'/, })"
-            exit 1
+        if [[ "$(resolve_path "$lib")" == "${INGOT_REAL}/"* ]]; then
+            LIBCXX_FROM_INGOT="$lib"
         fi
     done <<< "$LOADED_LIBCXX"
-    pass "libc++ loaded from the ingot: ${LOADED_LIBCXX//$'\n'/, }"
+    if [[ -z "$LIBCXX_FROM_INGOT" ]]; then
+        fail_msg "libc++ not loaded from the ingot (loaded: ${LOADED_LIBCXX//$'\n'/, })"
+        exit 1
+    fi
+    pass "libc++ loaded from the ingot: ${LIBCXX_FROM_INGOT}"
 fi
 echo ""
 
