@@ -1,0 +1,63 @@
+name: Minimal probe
+
+on:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  plan:
+    runs-on: ubuntu-24.04
+    outputs:
+      ingots: ${{ steps.plan.outputs.ingots }}
+    steps:
+      - uses: actions/checkout@v7
+      - id: plan
+        run: |
+          python3 - >> "$GITHUB_OUTPUT" <<'PY'
+          import json, tomllib
+          runners = {"x86_64": "ubuntu-24.04", "aarch64": "ubuntu-24.04-arm"}
+          with open("index.toml", "rb") as f:
+              index = tomllib.load(f)
+          ingots = [
+              {"version": t["version"], "arch": i["arch"],
+               "ref": i["registry"] + "/" + i["tag"].partition(":")[0] + "@" + i["digest"],
+               "runner": runners[i["arch"]]}
+              for t in index["toolchains"] if t["family"] == "gcc"
+              for i in t["ingots"] if i["platform"] == "linux"
+          ]
+          print("ingots=" + json.dumps(ingots))
+          PY
+
+  minimal:
+    needs: plan
+    strategy:
+      fail-fast: false
+      matrix:
+        ingot: ${{ fromJSON(needs.plan.outputs.ingots) }}
+    name: minimal (gcc ${{ matrix.ingot.version }}, ${{ matrix.ingot.arch }})
+    runs-on: ${{ matrix.ingot.runner }}
+    steps:
+      - uses: actions/checkout@v7
+      - uses: oras-project/setup-oras@v2
+        with:
+          version: '1.2.2'
+      - name: Run the minimal smoke test
+        env:
+          REF: ${{ matrix.ingot.ref }}
+          MOLD: molds/gcc/${{ matrix.ingot.version }}
+        run: |
+          set -euo pipefail
+          oras pull -o "${RUNNER_TEMP}/pulled" "$REF"
+          mapfile -t INGOTS < <(find "${RUNNER_TEMP}/pulled" -name '*.tar.xz' -type f)
+          if [[ ${#INGOTS[@]} -ne 1 ]]; then
+            echo "::error::Expected one ingot archive, found ${#INGOTS[@]}"
+            exit 1
+          fi
+          INGOT_DIR="${RUNNER_TEMP}/minimal-ingot"
+          mkdir -p "$INGOT_DIR"
+          tar -xJf "${INGOTS[0]}" -C "$INGOT_DIR"
+          for image in ubuntu:20.04 ubuntu:24.04; do
+            scripts/smoke-test-minimal.sh "$INGOT_DIR" "$MOLD" "$image"
+          done
