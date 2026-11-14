@@ -230,17 +230,26 @@ fi
 # (e.g., "{compiler} -o hello hello.cpp"), not a shell expression.
 read -ra CMD_ARRAY <<< "$EXPANDED_CMD"
 
-# The system linker reads the SDK, which lld may not. libc++ of the
-# ingot does not re-export libc++abi.
+# libc++ is looked for below lib and lib64, as scrap looks for it.
 LIBCXX_DIRS=()
 if [[ "$(uname -s)" == "Darwin" ]]; then
-    LIBCXX_LIST=$(find "$INGOT_ROOT" -name 'libc++.1.dylib' -exec dirname {} \; | sort -u)
-    while IFS= read -r dir; do
-        if [[ -n "$dir" ]]; then
-            LIBCXX_DIRS+=("$dir")
+    LIB_TOPS=()
+    for top in lib lib64; do
+        if [[ -d "${INGOT_ROOT}/${top}" ]]; then
+            LIB_TOPS+=("${INGOT_ROOT}/${top}")
         fi
-    done <<< "$LIBCXX_LIST"
+    done
+    if [[ ${#LIB_TOPS[@]} -gt 0 ]]; then
+        LIBCXX_LIST=$(find -H "${LIB_TOPS[@]}" \( -name 'libc++.dylib' -o -name 'libc++.*.dylib' \) -exec dirname {} \; | sort -u)
+        while IFS= read -r dir; do
+            if [[ -n "$dir" ]]; then
+                LIBCXX_DIRS+=("$dir")
+            fi
+        done <<< "$LIBCXX_LIST"
+    fi
 fi
+# The system linker reads the SDK, which lld may not. libc++ of the
+# ingot does not re-export libc++abi.
 if [[ ${#LIBCXX_DIRS[@]} -gt 0 ]]; then
     SYSTEM_LINKER_CMD=()
     for arg in "${CMD_ARRAY[@]}"; do
