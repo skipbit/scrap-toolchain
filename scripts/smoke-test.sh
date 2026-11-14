@@ -406,10 +406,23 @@ if [[ ${#LIBCXX_DIRS[@]} -gt 0 ]]; then
     set +e
     if [[ -n "$TIMEOUT_CMD" ]]; then
         $TIMEOUT_CMD "$TIMEOUT" env DYLD_PRINT_LIBRARIES=1 "${WORK_DIR}/hello" > /dev/null 2> "${WORK_DIR}/dyld"
+        DYLD_RUN_EXIT=$?
     else
         DYLD_PRINT_LIBRARIES=1 "${WORK_DIR}/hello" > /dev/null 2> "${WORK_DIR}/dyld"
+        DYLD_RUN_EXIT=$?
     fi
     set -e
+    if [[ "$DYLD_RUN_EXIT" -eq 124 && -n "$TIMEOUT_CMD" ]]; then
+        fail_msg "Execution with DYLD_PRINT_LIBRARIES timed out after ${TIMEOUT} seconds"
+        exit 1
+    fi
+    if [[ "$DYLD_RUN_EXIT" -ne 0 ]]; then
+        fail_msg "Execution with DYLD_PRINT_LIBRARIES failed (exit code: ${DYLD_RUN_EXIT})"
+        echo "  --- dyld output ---"
+        head -20 "${WORK_DIR}/dyld" | sed 's/^/  /'
+        echo "  ---"
+        exit 1
+    fi
     if ! LOADED_LIBCXX=$(grep -o '/[^ ]*/libc++\.[0-9.]*dylib$' "${WORK_DIR}/dyld"); then
         fail_msg "dyld did not report loading libc++"
         exit 1
