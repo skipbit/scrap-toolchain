@@ -423,7 +423,8 @@ if [[ ${#LIBCXX_DIRS[@]} -gt 0 ]]; then
         echo "  ---"
         exit 1
     fi
-    if ! LOADED_LIBCXX=$(grep -o '/[^ ]*/libc++\.[0-9.]*dylib$' "${WORK_DIR}/dyld"); then
+    LOADED_PATHS=$(sed -n 's/^dyld\[[0-9]*\]: [^ ]* //p' "${WORK_DIR}/dyld")
+    if ! LOADED_LIBCXX=$(grep '/libc++\.[0-9.]*dylib$' <<< "$LOADED_PATHS"); then
         fail_msg "dyld did not report loading libc++"
         exit 1
     fi
