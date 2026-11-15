@@ -131,8 +131,15 @@ while IFS= read -r version; do
         echo "Error: ${archive} does not match its checksum"
         exit 2
     fi
-    tar -xzf "${dir}/${archive}" -C "$dir"
+    if ! tar -xzf "${dir}/${archive}" -C "$dir"; then
+        echo "Error: cannot extract ${archive}"
+        exit 2
+    fi
     scrap="${dir}/scrap-${version}-linux-x86_64/scrap"
+    if [[ ! -x "$scrap" ]]; then
+        echo "Error: ${archive} has no scrap at scrap-${version}-linux-x86_64/scrap"
+        exit 2
+    fi
 
     read_answer=$(first_line "$scrap" index.toml)
     if [[ "$read_answer" == "$READ_LINE" ]]; then
