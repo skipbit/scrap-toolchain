@@ -543,8 +543,6 @@ jobs:
 
           gh pr comment "${PR_NUMBER}" --body "${BODY}"
 
-  # The required check. The names of the other jobs depend on the molds, so
-  # this job reports their results under a fixed name.
   # Released scrap reads the index on main, so the index this pull request
   # leads to must stay readable by each of them.
   check-index-readable:
@@ -578,6 +576,8 @@ jobs:
           chmod +x scripts/check-scrap-reads-index.sh
           scripts/check-scrap-reads-index.sh index.toml
 
+  # The required check. The names of the other jobs depend on the molds, so
+  # this job reports their results under a fixed name.
   validate:
     needs: [detect-changes, reject-unparsable-molds, validate-fetch, validate-build, check-index-readable]
     if: always()
