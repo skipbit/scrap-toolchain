@@ -612,7 +612,7 @@ for tc in toolchains:
     lines.append('[[toolchains]]')
     lines.append(f'family = \"{esc(tc[\"family\"])}\"')
     lines.append(f'version = \"{esc(tc[\"version\"])}\"')
-    lines.append('status = \"unknown-state\"')
+    lines.append(f'status = \"{esc(tc[\"status\"])}\"')
     lines.append(f'license = \"{esc(tc[\"license\"])}\"')
     lines.append(f'source_type = \"{esc(tc[\"source_type\"])}\"')
     lines.append(f'compiler = \"{esc(tc[\"compiler\"])}\"')
