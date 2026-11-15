@@ -248,8 +248,8 @@ if [[ "$(uname -s)" == "Darwin" ]]; then
         done <<< "$LIBCXX_LIST"
     fi
 fi
-# The system linker reads the SDK, which lld may not. libc++ of the
-# ingot does not re-export libc++abi.
+# The system linker reads the SDK of the system. libc++abi is named
+# on its own, as the libc++ of the ingot keeps it apart.
 if [[ ${#LIBCXX_DIRS[@]} -gt 0 ]]; then
     SYSTEM_LINKER_CMD=()
     for arg in "${CMD_ARRAY[@]}"; do
