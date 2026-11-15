@@ -61,9 +61,10 @@ jobs:
           CHANGED_FILES=$(git_diff_names)
 
           # generate-index.sh builds the index from the molds and keeps what
-          # it cannot resolve from the current index.toml.
+          # it cannot resolve from the current index.toml. It runs mold-hash.py
+          # to pair the molds with their ingots.
           INDEX_INPUTS=$(echo "$CHANGED_FILES" \
-            | grep -E '^(molds/|index\.toml$|scripts/(generate-index|check-scrap-reads-index)\.sh$|\.github/workflows/pr-validation\.yml$)' || true)
+            | grep -E '^(molds/|index\.toml$|scripts/(generate-index\.sh|check-scrap-reads-index\.sh|mold-hash\.py)$|\.github/workflows/pr-validation\.yml$)' || true)
           if [[ -n "$INDEX_INPUTS" ]]; then
             echo "index_affected=true" >> "$GITHUB_OUTPUT"
           else
