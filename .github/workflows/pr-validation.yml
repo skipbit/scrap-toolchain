@@ -22,6 +22,7 @@ jobs:
       fetch_matrix: ${{ steps.classify.outputs.fetch_matrix }}
       build_molds: ${{ steps.classify.outputs.build_molds }}
       unparsable_molds: ${{ steps.classify.outputs.unparsable_molds }}
+      index_affected: ${{ steps.classify.outputs.index_affected }}
     steps:
       - uses: actions/checkout@v7
         with:
@@ -58,6 +59,17 @@ jobs:
           }
 
           CHANGED_FILES=$(git_diff_names)
+
+          # generate-index.sh builds the index from the molds and keeps what
+          # it cannot resolve from the current index.toml. It runs mold-hash.py
+          # to pair the molds with their ingots.
+          INDEX_INPUTS=$(echo "$CHANGED_FILES" \
+            | grep -E '^(molds/|index\.toml$|scripts/(generate-index\.sh|check-scrap-reads-index\.sh|mold-hash\.py)$|\.github/workflows/pr-validation\.yml$)' || true)
+          if [[ -n "$INDEX_INPUTS" ]]; then
+            echo "index_affected=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "index_affected=false" >> "$GITHUB_OUTPUT"
+          fi
 
           # Check if infrastructure files changed (triggers full validation of all molds).
           # Only files that directly affect mold validation are included:
@@ -531,10 +543,43 @@ jobs:
 
           gh pr comment "${PR_NUMBER}" --body "${BODY}"
 
+  # Released scrap reads the index on main, so the index this pull request
+  # leads to must stay readable by each of them.
+  check-index-readable:
+    needs: detect-changes
+    if: needs.detect-changes.outputs.index_affected == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      packages: read
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Set up Python
+        uses: actions/setup-python@v7
+        with:
+          python-version: '3.12'
+
+      - name: Generate the index
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+        run: |
+          chmod +x scripts/generate-index.sh
+          scripts/generate-index.sh
+
+      - name: Check that released scrap reads the index
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          chmod +x scripts/check-scrap-reads-index.sh
+          scripts/check-scrap-reads-index.sh index.toml
+
   # The required check. The names of the other jobs depend on the molds, so
   # this job reports their results under a fixed name.
   validate:
-    needs: [detect-changes, reject-unparsable-molds, validate-fetch, validate-build]
+    needs: [detect-changes, reject-unparsable-molds, validate-fetch, validate-build, check-index-readable]
     if: always()
     runs-on: ubuntu-24.04
     steps:
