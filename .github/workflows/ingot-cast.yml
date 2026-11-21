@@ -91,15 +91,16 @@ jobs:
             # Check for infrastructure changes that affect all molds.
             # Only the files that decide an ingot's content qualify:
             # cast-ingot.sh is the build, remove-needed.sh rewrites files
-            # of fetch ingots, and platforms.toml picks the container that
-            # sets the glibc baseline. The rest affect how
+            # of Linux fetch ingots, rebuild-libunwind.sh rebuilds libunwind
+            # of macOS fetch ingots, and platforms.toml picks the container
+            # that sets the glibc baseline. The rest affect how
             # builds run, not what is built — smoke-test.sh verifies the
             # ingot after it is packed, validate-mold.sh and schema/ belong
             # to pr-validation.yml, and generate-index.sh runs afterwards in
             # index-update.yml. Rebuilding for those would republish a
             # version from a different build for no gain; use
             # workflow_dispatch to rebuild a mold on purpose.
-            INFRA_CHANGED=$(echo "$ALL_CHANGED_FILES" | grep -E '^(platforms\.toml|scripts/cast-ingot\.sh|scripts/remove-needed\.sh)$' || true)
+            INFRA_CHANGED=$(echo "$ALL_CHANGED_FILES" | grep -E '^(platforms\.toml|scripts/cast-ingot\.sh|scripts/remove-needed\.sh|scripts/rebuild-libunwind\.sh)$' || true)
 
             CHANGED_MOLDS=()
 
@@ -614,7 +615,8 @@ jobs:
   # the archive; there are no stages. Linux runs inside the container
   # that matches glibc_min, launched like the build stages, with the
   # packages of the fetch validation in pr-validation.yml; macOS runs on
-  # the runner.
+  # the runner. Python is set up where there is no container; the disk
+  # cleanup and the libc++ test in a minimal container run on Linux only.
   # ============================================================
 
   cast-fetch:
@@ -662,30 +664,30 @@ jobs:
           mkdir -p "${OUTPUT_DIR}"
           chmod +x scripts/cast-ingot.sh scripts/smoke-test.sh
 
-          if [[ -z "${CONTAINER}" ]]; then
+          if [[ -n "${CONTAINER}" ]]; then
+            docker run --rm \
+              -v "${GITHUB_WORKSPACE}:/workspace" \
+              -v "${OUTPUT_DIR}:/output" \
+              -e DEBIAN_FRONTEND=noninteractive \
+              -e OUTPUT_DIR=/output \
+              -e MOLD_ARG="${MOLD}" \
+              -e PLATFORM_ARG="${PLATFORM}" \
+              -e ARCH_ARG="${ARCH}" \
+              -w /workspace \
+              "${CONTAINER}" \
+              bash -c '
+                set -euo pipefail
+                apt-get update -qq
+                apt-get install -y -qq \
+                  ca-certificates curl jq xz-utils file binutils \
+                  python3-pip libc6-dev libxml2 patchelf libatomic1
+                python3 -c "import tomllib" 2>/dev/null || pip3 install tomli
+                scripts/cast-ingot.sh "${MOLD_ARG}" "${PLATFORM_ARG}" "${ARCH_ARG}"
+              '
+          else
             OUTPUT_DIR="${OUTPUT_DIR}" \
               scripts/cast-ingot.sh "${MOLD}" "${PLATFORM}" "${ARCH}"
-            exit 0
           fi
-          docker run --rm \
-            -v "${GITHUB_WORKSPACE}:/workspace" \
-            -v "${OUTPUT_DIR}:/output" \
-            -e DEBIAN_FRONTEND=noninteractive \
-            -e OUTPUT_DIR=/output \
-            -e MOLD_ARG="${MOLD}" \
-            -e PLATFORM_ARG="${PLATFORM}" \
-            -e ARCH_ARG="${ARCH}" \
-            -w /workspace \
-            "${CONTAINER}" \
-            bash -c '
-              set -euo pipefail
-              apt-get update -qq
-              apt-get install -y -qq \
-                ca-certificates curl jq xz-utils file binutils \
-                python3-pip libc6-dev libxml2 patchelf libatomic1
-              python3 -c "import tomllib" 2>/dev/null || pip3 install tomli
-              scripts/cast-ingot.sh "${MOLD_ARG}" "${PLATFORM_ARG}" "${ARCH_ARG}"
-            '
 
       - name: Smoke test libc++ in a minimal container
         if: matrix.family == 'llvm' && matrix.platform == 'linux'

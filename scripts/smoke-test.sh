@@ -250,17 +250,19 @@ if [[ "$(uname -s)" == "Darwin" ]]; then
         done <<< "$LIBCXX_LIST"
     fi
 fi
-# The system linker reads the SDK of the system. libc++abi is named
-# on its own, as the libc++ of the ingot keeps it apart.
 if [[ ${#LIBCXX_DIRS[@]} -gt 0 ]]; then
+    # The system linker reads the SDK of the system. libc++abi is named
+    # on its own, as the libc++ of the ingot keeps it apart.
+    SCRAP_LINK_FLAGS=()
+    for dir in "${LIBCXX_DIRS[@]}"; do
+        SCRAP_LINK_FLAGS+=(-L "$dir" -Xlinker -rpath -Xlinker "$dir")
+    done
+    SCRAP_LINK_FLAGS+=(-lc++abi)
     SYSTEM_LINKER_CMD=()
     for arg in "${CMD_ARRAY[@]}"; do
         [[ "$arg" == "-fuse-ld=lld" ]] || SYSTEM_LINKER_CMD+=("$arg")
     done
-    for dir in "${LIBCXX_DIRS[@]}"; do
-        SYSTEM_LINKER_CMD+=(-L "$dir" -Xlinker -rpath -Xlinker "$dir")
-    done
-    CMD_ARRAY=("${SYSTEM_LINKER_CMD[@]}" -lc++abi)
+    CMD_ARRAY=("${SYSTEM_LINKER_CMD[@]}" "${SCRAP_LINK_FLAGS[@]}")
     info "Command with the system linker: ${CMD_ARRAY[*]}"
 fi
 
@@ -497,11 +499,7 @@ int main() {
     return ok == 2 ? 0 : 1;
 }
 CXX_SOURCE
-    EXCEPTIONS_CMD=("$COMPILER_PATH" -o exceptions exceptions.cpp)
-    for dir in "${LIBCXX_DIRS[@]}"; do
-        EXCEPTIONS_CMD+=(-L "$dir" -Xlinker -rpath -Xlinker "$dir")
-    done
-    EXCEPTIONS_CMD+=(-lc++abi)
+    EXCEPTIONS_CMD=("$COMPILER_PATH" -o exceptions exceptions.cpp "${SCRAP_LINK_FLAGS[@]}")
     info "Command: ${EXCEPTIONS_CMD[*]}"
 
     set +e

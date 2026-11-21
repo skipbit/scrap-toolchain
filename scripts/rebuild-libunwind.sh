@@ -50,7 +50,9 @@ build_version_of() {
 
 # Prints the install name of a dylib.
 install_name_of() {
-    otool -D "$1" | sed -n 2p
+    local listing
+    listing=$(otool -D "$1") || internal "cannot read ${1}"
+    sed -n 2p <<< "$listing"
 }
 
 # Prints the names of the exported symbols of a dylib.
@@ -60,7 +62,8 @@ exported_of() {
     awk 'NF { print $NF }' <<< "$listing" | sort -u
 }
 
-read -r _ MINOS <<< "$(build_version_of "$TARGET")"
+TARGET_VERSION=$(build_version_of "$TARGET")
+read -r _ MINOS <<< "$TARGET_VERSION"
 [[ -n "$MINOS" ]] || invalid "${LIBRARY} has no minimum macOS"
 
 WORK=$(mktemp -d)
@@ -87,17 +90,25 @@ make -C "${WORK}/build" -j "$(sysctl -n hw.ncpu)" unwind_shared \
 BUILT=$(find "${WORK}/build" -name "$(basename "$LIBRARY")" -type f | head -1)
 [[ -n "$BUILT" ]] || invalid "the build made no $(basename "$LIBRARY")"
 
-read -r BUILT_TOOL BUILT_MINOS <<< "$(build_version_of "$BUILT")"
+BUILT_VERSION=$(build_version_of "$BUILT")
+read -r BUILT_TOOL BUILT_MINOS <<< "$BUILT_VERSION"
 [[ "$BUILT_TOOL" == "$APPLE_LD_TOOL" ]] \
     || invalid "the new libunwind is linked by tool ${BUILT_TOOL}, not Apple's ld"
 [[ "$BUILT_MINOS" == "$MINOS" ]] \
     || invalid "the new libunwind is for macOS ${BUILT_MINOS}, not ${MINOS}"
-[[ "$(install_name_of "$BUILT")" == "$(install_name_of "$TARGET")" ]] \
-    || invalid "the install name differs: $(install_name_of "$BUILT") instead of $(install_name_of "$TARGET")"
-if ! diff <(exported_of "$TARGET") <(exported_of "$BUILT") >&2; then
+
+TARGET_NAME=$(install_name_of "$TARGET")
+BUILT_NAME=$(install_name_of "$BUILT")
+[[ -n "$TARGET_NAME" ]] || invalid "${LIBRARY} has no install name"
+[[ "$BUILT_NAME" == "$TARGET_NAME" ]] \
+    || invalid "the install name differs: ${BUILT_NAME} instead of ${TARGET_NAME}"
+
+TARGET_EXPORTED=$(exported_of "$TARGET")
+BUILT_EXPORTED=$(exported_of "$BUILT")
+if ! diff <(echo "$TARGET_EXPORTED") <(echo "$BUILT_EXPORTED") >&2; then
     invalid "the exported symbols differ (< ingot, > new)"
 fi
-EXPORTED=$(exported_of "$BUILT" | wc -l | tr -d ' ')
+EXPORTED=$(wc -l <<< "$BUILT_EXPORTED" | tr -d ' ')
 
 cp "$BUILT" "$TARGET"
-echo "Replaced ${LIBRARY}: Apple's ld, macOS ${MINOS}, $(install_name_of "$TARGET"), ${EXPORTED} exported symbols"
+echo "Replaced ${LIBRARY}: Apple's ld, macOS ${MINOS}, ${TARGET_NAME}, ${EXPORTED} exported symbols"

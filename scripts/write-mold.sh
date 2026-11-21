@@ -68,17 +68,20 @@ checksum() {
     echo "$digest"
 }
 
-# The new URLs are the base URLs with the version replaced.
-# The source of a rebuilt library is left out with its binary.
+# The new URLs are the base URLs with the version replaced. Archives named
+# as missing are left out, and so is the source of a library rebuilt in
+# their binary.
 NEW_URLS=$(python3 - "${BASE_DIR}/mold.toml" "$BASE_VERSION" "$VERSION" "${MISSING[@]}" <<'EOF'
 import sys, tomllib
 path, old, new, *missing = sys.argv[1:]
 with open(path, 'rb') as f:
     source = tomllib.load(f)['source']
-urls = [b['url'] for b in source.get('binaries', [])]
-urls += [b['rebuild']['source_url'] for b in source.get('binaries', [])
-         if 'rebuild' in b and b['url'].replace(old, new).rsplit('/', 1)[1] not in missing]
-if 'build' in source:
+def is_kept(url):
+    return url.replace(old, new).rsplit('/', 1)[1] not in missing
+binaries = [b for b in source.get('binaries', []) if is_kept(b['url'])]
+urls = [b['url'] for b in binaries]
+urls += [b['rebuild']['source_url'] for b in binaries if 'rebuild' in b]
+if 'build' in source and is_kept(source['build']['source_url']):
     urls.append(source['build']['source_url'])
 for url in urls:
     if old not in url:
@@ -89,11 +92,7 @@ EOF
 
 CHECKSUMS='{}'
 while read -r url; do
-    name="${url##*/}"
-    if [[ " ${MISSING[*]} " == *" ${name} "* ]]; then
-        continue
-    fi
-    log "${FAMILY} ${VERSION}: ${name}"
+    log "${FAMILY} ${VERSION}: ${url##*/}"
     digest=$(checksum "$url")
     CHECKSUMS=$(jq --arg u "$url" --arg d "$digest" '. + {($u): $d}' <<< "$CHECKSUMS")
 done <<< "$NEW_URLS"
