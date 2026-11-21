@@ -272,7 +272,7 @@ URLS_TO_CHECK=()
 if [[ "$SOURCE_TYPE" == "fetch" ]]; then
     while IFS= read -r url; do
         [[ -n "$url" ]] && URLS_TO_CHECK+=("$url")
-    done < <(jq -r '.source.binaries[]?.url // empty' "$MOLD_JSON_FILE")
+    done < <(jq -r '.source.binaries[]? | .url // empty, .rebuild.source_url // empty' "$MOLD_JSON_FILE")
 
     BF_ENABLED=$(jq -r '.source.build_fallback.enabled // false' "$MOLD_JSON_FILE")
     if [[ "$BF_ENABLED" == "true" ]]; then

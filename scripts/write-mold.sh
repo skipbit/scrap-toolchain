@@ -5,7 +5,8 @@
 #   Run from the repository root directory.
 #
 # Copies the base mold and changes only the version, the download URLs and
-# their checksums; everything else is carried over for review. Binaries whose
+# their checksums, the source URLs of rebuilt libraries included;
+# everything else is carried over for review. Binaries whose
 # file names are given as missing-file are left out.
 #
 # Checksums of GitHub release assets come from the digest GitHub records for
@@ -68,12 +69,15 @@ checksum() {
 }
 
 # The new URLs are the base URLs with the version replaced.
-NEW_URLS=$(python3 - "${BASE_DIR}/mold.toml" "$BASE_VERSION" "$VERSION" <<'EOF'
+# The source of a rebuilt library is left out with its binary.
+NEW_URLS=$(python3 - "${BASE_DIR}/mold.toml" "$BASE_VERSION" "$VERSION" "${MISSING[@]}" <<'EOF'
 import sys, tomllib
-path, old, new = sys.argv[1:]
+path, old, new, *missing = sys.argv[1:]
 with open(path, 'rb') as f:
     source = tomllib.load(f)['source']
 urls = [b['url'] for b in source.get('binaries', [])]
+urls += [b['rebuild']['source_url'] for b in source.get('binaries', [])
+         if 'rebuild' in b and b['url'].replace(old, new).rsplit('/', 1)[1] not in missing]
 if 'build' in source:
     urls.append(source['build']['source_url'])
 for url in urls:
@@ -141,9 +145,15 @@ for line in lines:
     current.append(line)
 blocks.append(current)
 
-out = []
+# The rebuild table of a binary entry goes with the entry.
+out, dropped = [], False
 for block in blocks:
-    out += process_block(block)
+    if block[0].strip() == '[source.binaries.rebuild]' and dropped:
+        continue
+    processed = process_block(block)
+    if block[0].strip() == '[[source.binaries]]':
+        dropped = not processed
+    out += processed
 open(dst, 'w').write(''.join(out))
 
 # The result must parse, name the new version, and every binary and build
@@ -152,6 +162,8 @@ with open(dst, 'rb') as f:
     mold = tomllib.load(f)
 source = mold['source']
 pairs = [(b['url'], b['sha256']) for b in source.get('binaries', [])]
+pairs += [(b['rebuild']['source_url'], b['rebuild']['source_sha256'])
+          for b in source.get('binaries', []) if 'rebuild' in b]
 if 'build' in source:
     pairs.append((source['build']['source_url'], source['build']['source_sha256']))
 if mold['metadata']['version'] != new:

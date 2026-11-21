@@ -139,8 +139,9 @@ jobs:
 
           # === Step 2: Classify by source type ===
           # Fetch-type molds are validated in pr-validation.yml. Only the
-          # platforms whose binary entry removes DT_NEEDED entries produce
-          # ingots here, since those binaries differ from the upstream ones.
+          # platforms whose binary entry removes DT_NEEDED entries or
+          # rebuilds libraries produce ingots here, since those binaries
+          # differ from the upstream ones.
 
           BUILD_MOLD_DIRS=()
           FETCH_MOLD_DIRS=()
@@ -164,7 +165,7 @@ jobs:
           with open(f'{mold}/mold.toml', 'rb') as f:
               data = tomllib.load(f)
           for b in data['source']['binaries']:
-              if b.get('remove_needed'):
+              if b.get('remove_needed') or b.get('rebuild'):
                   print(f\"{b['platform']}-{b['arch']}\")
           ")
               if [[ -z "$CAST_IDS" ]]; then
@@ -173,7 +174,7 @@ jobs:
               fi
               FETCH_MOLD_DIRS+=("$mold")
               FETCH_PLATFORM_IDS["$mold"]="$CAST_IDS"
-              echo "::notice::Fetch type with removed DT_NEEDED entries: ${mold}"
+              echo "::notice::Fetch type with changed binaries: ${mold}"
             elif [[ "$SOURCE_TYPE" == "build" ]]; then
               BUILD_MOLD_DIRS+=("$mold")
               echo "::notice::Build type detected: ${mold}"
@@ -184,9 +185,9 @@ jobs:
           # Cross each mold with its Tier 1 platforms from platforms.toml.
           # A build-type mold keeps the platforms in source.platforms.supported
           # when it is specified; a fetch-type mold keeps the platforms that
-          # remove DT_NEEDED entries. The build matrix is consumed by the
-          # cast-build-configure/make/package jobs, the fetch matrix by
-          # cast-fetch.
+          # remove DT_NEEDED entries or rebuild libraries. The build matrix
+          # is consumed by the cast-build-configure/make/package jobs, the
+          # fetch matrix by cast-fetch.
 
           TIER1_PLATFORMS=$(python3 -c "
           import tomllib, json
@@ -319,7 +320,7 @@ jobs:
             HAS_FETCH=true
             FETCH_MATRIX=$(printf '%s\n' "${FETCH_ENTRIES[@]}" | jq -cs '{include: .}')
           elif [[ ${#FETCH_MOLD_DIRS[@]} -gt 0 ]]; then
-            echo "::warning::Fetch-type molds with removed DT_NEEDED entries detected but no Tier 1 platform entries generated"
+            echo "::warning::Fetch-type molds with changed binaries detected but no Tier 1 platform entries generated"
           fi
 
           {
@@ -605,13 +606,15 @@ jobs:
           retention-days: 3
 
   # ============================================================
-  # Fetch-type molds whose binary entries remove DT_NEEDED entries.
+  # Fetch-type molds whose binary entries remove DT_NEEDED entries or
+  # rebuild libraries.
   #
   # The binaries no longer match the upstream archive, so they are
   # published as ingots. One run of cast-ingot.sh covers download through
-  # the archive; there are no stages. Linux only, inside the container
-  # that matches glibc_min, launched like the build stages. The packages
-  # are those of the fetch validation in pr-validation.yml.
+  # the archive; there are no stages. Linux runs inside the container
+  # that matches glibc_min, launched like the build stages, with the
+  # packages of the fetch validation in pr-validation.yml; macOS runs on
+  # the runner.
   # ============================================================
 
   cast-fetch:
@@ -625,7 +628,15 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
+      # cast-ingot.sh reads mold.toml with tomllib.
+      - name: Set up Python
+        if: ${{ !matrix.container }}
+        uses: actions/setup-python@v7
+        with:
+          python-version: '3.12'
+
       - name: Maximize build space
+        if: matrix.platform == 'linux'
         run: |
           echo "=== Disk usage before cleanup ==="
           df -h /
@@ -651,6 +662,11 @@ jobs:
           mkdir -p "${OUTPUT_DIR}"
           chmod +x scripts/cast-ingot.sh scripts/smoke-test.sh
 
+          if [[ -z "${CONTAINER}" ]]; then
+            OUTPUT_DIR="${OUTPUT_DIR}" \
+              scripts/cast-ingot.sh "${MOLD}" "${PLATFORM}" "${ARCH}"
+            exit 0
+          fi
           docker run --rm \
             -v "${GITHUB_WORKSPACE}:/workspace" \
             -v "${OUTPUT_DIR}:/output" \
@@ -672,7 +688,7 @@ jobs:
             '
 
       - name: Smoke test libc++ in a minimal container
-        if: matrix.family == 'llvm'
+        if: matrix.family == 'llvm' && matrix.platform == 'linux'
         env:
           CONTAINER: ${{ matrix.container }}
           LATEST_IMAGE: ubuntu:24.04
@@ -709,7 +725,7 @@ jobs:
   #   - Output package-manifest JSON for downstream index generation
   #   - Partial release prevention: skip molds missing any platform they
   #     cast (Tier 1 platforms for build-type molds, those removing
-  #     DT_NEEDED entries for fetch-type molds)
+  #     DT_NEEDED entries or rebuilding libraries for fetch-type molds)
   #
   # Dependency design:
   #   needs does NOT include cast-build-configure or cast-build-make.
@@ -800,8 +816,9 @@ jobs:
 
             # Determine expected platform count: intersect the platforms the
             # mold casts with Tier 1 platforms. A fetch-type mold casts those
-            # whose binary entry removes DT_NEEDED entries; a build-type mold
-            # those in source.platforms.supported, or all when it is omitted.
+            # whose binary entry removes DT_NEEDED entries or rebuilds
+            # libraries; a build-type mold those in
+            # source.platforms.supported, or all when it is omitted.
             MOLD_DIR="molds/${key}"
             EXPECTED_COUNT=$(MOLD_VAR="$MOLD_DIR" python3 -c "
           import tomllib, os
@@ -814,7 +831,7 @@ jobs:
           source = mold_data.get('source', {})
           supported = source.get('platforms', {}).get('supported', [])
           if source.get('type') == 'fetch':
-              cast_ids = {f\"{b['platform']}-{b['arch']}\" for b in source.get('binaries', []) if b.get('remove_needed')}
+              cast_ids = {f\"{b['platform']}-{b['arch']}\" for b in source.get('binaries', []) if b.get('remove_needed') or b.get('rebuild')}
               count = len(cast_ids & tier1_ids)
           elif supported:
               count = len(set(supported) & tier1_ids)
