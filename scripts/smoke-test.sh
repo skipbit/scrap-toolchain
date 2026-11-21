@@ -9,7 +9,8 @@
 #
 # On macOS, an ingot that holds libc++ is tested as scrap builds with it:
 # linked by the system linker against that libc++, which the program
-# must then load.
+# must then load. A second program, linked the same way, must catch an
+# exception and use RTTI.
 #
 # This script uses a fail-fast approach: each step exits immediately on failure
 # rather than accumulating errors, since later steps depend on earlier ones.
@@ -456,6 +457,74 @@ else
     exit 1
 fi
 echo ""
+
+# --- Step 8: Exceptions with the libc++ of the ingot ---
+# A program built as scrap builds it must catch an exception thrown
+# through the libc++abi and libunwind of the ingot, and use RTTI.
+if [[ ${#LIBCXX_DIRS[@]} -gt 0 ]]; then
+    echo -e "${BOLD}8. Exceptions with the libc++ of the ingot${RESET}"
+
+    cat > "${WORK_DIR}/exceptions.cpp" <<'CXX_SOURCE'
+#include <cstdio>
+#include <stdexcept>
+#include <typeinfo>
+struct Base { virtual ~Base() = default; };
+struct Derived : Base {};
+int main() {
+    int ok = 0;
+    try {
+        throw std::runtime_error("thrown");
+    } catch (const std::exception&) {
+        ok += 1;
+    }
+    Derived derived;
+    Base* base = &derived;
+    if (dynamic_cast<Derived*>(base) != nullptr && typeid(*base) == typeid(Derived)) {
+        ok += 1;
+    }
+    std::printf("ok=%d\n", ok);
+    return ok == 2 ? 0 : 1;
+}
+CXX_SOURCE
+    EXCEPTIONS_CMD=("$COMPILER_PATH" -o exceptions exceptions.cpp)
+    for dir in "${LIBCXX_DIRS[@]}"; do
+        EXCEPTIONS_CMD+=(-L "$dir" -Xlinker -rpath -Xlinker "$dir")
+    done
+    EXCEPTIONS_CMD+=(-lc++abi)
+    info "Command: ${EXCEPTIONS_CMD[*]}"
+
+    set +e
+    EXCEPTIONS_COMPILE_OUTPUT=$(cd "$WORK_DIR" && "${EXCEPTIONS_CMD[@]}" 2>&1)
+    EXCEPTIONS_COMPILE_EXIT=$?
+    set -e
+    if [[ "$EXCEPTIONS_COMPILE_EXIT" -ne 0 ]]; then
+        fail_msg "Compilation failed (exit code: ${EXCEPTIONS_COMPILE_EXIT})"
+        echo "  --- compiler output ---"
+        # shellcheck disable=SC2001  # indents every line of the output
+        echo "$EXCEPTIONS_COMPILE_OUTPUT" | sed 's/^/  /'
+        echo "  ---"
+        exit 1
+    fi
+
+    set +e
+    if [[ -n "$TIMEOUT_CMD" ]]; then
+        EXCEPTIONS_OUTPUT=$($TIMEOUT_CMD "$TIMEOUT" "${WORK_DIR}/exceptions" 2>&1)
+    else
+        EXCEPTIONS_OUTPUT=$("${WORK_DIR}/exceptions" 2>&1)
+    fi
+    EXCEPTIONS_EXIT=$?
+    set -e
+    if [[ "$EXCEPTIONS_EXIT" -eq 124 && -n "$TIMEOUT_CMD" ]]; then
+        fail_msg "Exception test timed out after ${TIMEOUT} seconds"
+        exit 1
+    fi
+    if [[ "$EXCEPTIONS_EXIT" -ne 0 || "$EXCEPTIONS_OUTPUT" != "ok=2" ]]; then
+        fail_msg "Exception test failed (exit code: ${EXCEPTIONS_EXIT}, output: ${EXCEPTIONS_OUTPUT})"
+        exit 1
+    fi
+    pass "Exception caught and RTTI used with the libc++ of the ingot"
+    echo ""
+fi
 
 # --- Summary ---
 echo -e "${BOLD}Summary${RESET}"
