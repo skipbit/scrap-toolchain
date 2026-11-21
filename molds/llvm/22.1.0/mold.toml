@@ -41,6 +41,11 @@ arch = "aarch64"
 url = "https://github.com/llvm/llvm-project/releases/download/llvmorg-22.1.0/LLVM-22.1.0-macOS-ARM64.tar.xz"
 sha256 = "cd5e615f4dab23d0239359cd343202c5f6ceeaf072c245a3c685d73afac09646"
 
+[source.binaries.rebuild]
+libraries = ["libunwind"]
+source_url = "https://github.com/llvm/llvm-project/releases/download/llvmorg-22.1.0/llvm-project-22.1.0.src.tar.xz"
+source_sha256 = "25d2e2adc4356d758405dd885fcfd6447bce82a90eb78b6b87ce0934bd077173"
+
 [test]
 hello_world_source = """
 #include <iostream>
