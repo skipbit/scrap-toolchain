@@ -29,7 +29,7 @@ APPLE_LD_TOOL=3
 invalid() { echo "ERROR: $1" >&2; exit 2; }
 internal() { echo "ERROR: $1" >&2; exit 3; }
 
-for cmd in cmake make otool nm xcrun; do
+for cmd in cmake otool nm xcrun; do
     command -v "$cmd" > /dev/null || internal "${cmd} is required"
 done
 
@@ -83,11 +83,11 @@ cmake -S "${SOURCE_DIR}/runtimes" -B "${WORK}/build" \
     -DLLVM_INCLUDE_TESTS=OFF \
     > "${WORK}/configure.log" 2>&1 \
     || { tail -40 "${WORK}/configure.log" >&2; invalid "cannot configure libunwind"; }
-make -C "${WORK}/build" -j "$(sysctl -n hw.ncpu)" unwind_shared \
+cmake --build "${WORK}/build" --target unwind_shared -j "$(sysctl -n hw.ncpu)" \
     > "${WORK}/build.log" 2>&1 \
     || { tail -40 "${WORK}/build.log" >&2; invalid "cannot build libunwind"; }
 
-BUILT=$(find "${WORK}/build" -name "$(basename "$LIBRARY")" -type f | head -1)
+BUILT=$(find "${WORK}/build" -name "$(basename "$LIBRARY")" -type f -print -quit)
 [[ -n "$BUILT" ]] || invalid "the build made no $(basename "$LIBRARY")"
 
 BUILT_VERSION=$(build_version_of "$BUILT")

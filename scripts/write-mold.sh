@@ -71,7 +71,7 @@ checksum() {
 # The new URLs are the base URLs with the version replaced. Archives named
 # as missing are left out, and so is the source of a library rebuilt in
 # their binary.
-NEW_URLS=$(python3 - "${BASE_DIR}/mold.toml" "$BASE_VERSION" "$VERSION" "${MISSING[@]}" <<'EOF'
+NEW_URLS=$(python3 - "${BASE_DIR}/mold.toml" "$BASE_VERSION" "$VERSION" ${MISSING[@]+"${MISSING[@]}"} <<'EOF'
 import sys, tomllib
 path, old, new, *missing = sys.argv[1:]
 with open(path, 'rb') as f:
@@ -99,7 +99,7 @@ done <<< "$NEW_URLS"
 
 mkdir -p "$NEW_DIR"
 python3 - "${BASE_DIR}/mold.toml" "${NEW_DIR}/mold.toml" "$BASE_VERSION" "$VERSION" \
-    "$CHECKSUMS" "${MISSING[@]}" <<'EOF' || { rm -rf "$NEW_DIR"; die "cannot write ${NEW_DIR}/mold.toml"; }
+    "$CHECKSUMS" ${MISSING[@]+"${MISSING[@]}"} <<'EOF' || { rm -rf "$NEW_DIR"; die "cannot write ${NEW_DIR}/mold.toml"; }
 import json, re, sys, tomllib
 src, dst, old, new, checksums, *missing = sys.argv[1:]
 checksums = json.loads(checksums)
