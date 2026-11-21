@@ -14,8 +14,8 @@ An environment is "<platform>-<arch>". A toolchain supports the
 environments in source.platforms.supported. Without that list, a fetch
 toolchain supports the environments of its source.binaries and a build
 toolchain supports every Tier 1 environment. Only Tier 1 environments
-are cast, so a build toolchain, or a fetch binary with remove_needed,
-outside Tier 1 has no ingot.
+are cast, so a build toolchain, or a fetch binary with remove_needed or
+rebuild, outside Tier 1 has no ingot.
 
 Exit codes:
   0 = The index matches the molds
@@ -56,7 +56,8 @@ def supported_environments(mold, tier1):
     if source["type"] == "fetch":
         binaries = source.get("binaries", [])
         uncast = {
-            environment(b) for b in binaries if b.get("remove_needed")
+            environment(b) for b in binaries
+            if b.get("remove_needed") or b.get("rebuild")
         } - tier1
         return (declared or {environment(b) for b in binaries}) - uncast
     return (declared or tier1) & tier1

@@ -26,13 +26,13 @@ scrap-toolchain/
 1. A contributor submits a PR adding or updating a `molds/{family}/{version}/mold.toml`
 2. **PR Validation** — the mold is validated against `schema/mold-v1.schema.json`, and **fetch-type** molds are verified on Tier 1 platforms where binaries are defined (Linux platforms are mandatory; macOS is verified when a binary is available)
 3. On merge, **Ingot Cast** — CI processes the mold:
-   - **fetch** molds: no artifacts produced (validation already done in step 2), except for the Linux binaries that remove DT_NEEDED entries, which CI patches and pushes to `ghcr.io` as ingots
+   - **fetch** molds: no artifacts produced (validation already done in step 2), except for the Linux binaries that remove DT_NEEDED entries and the macOS binaries that rebuild libraries, which CI changes and pushes to `ghcr.io` as ingots
    - **build** molds: CI builds the toolchain and pushes ingots to `ghcr.io` as OCI artifacts
 4. **Index Update** — `index.toml` is regenerated from mold definitions and build artifacts, then committed to the repository
 
 ## Mold Types
 
-- **fetch** — References prebuilt binaries from upstream (e.g., LLVM official releases). CI validates the recipe but does not produce artifacts; users download directly from upstream. A Linux binary entry can list DT_NEEDED entries to remove (`source.binaries[].remove_needed`, e.g., `libatomic.so.1` from libc++ of LLVM). CI removes them with `patchelf` after checking that the file takes no symbol from the library, and pushes the result to `ghcr.io` as an ingot; `index.toml` then lists the ingot for that platform instead of the upstream archive.
+- **fetch** — References prebuilt binaries from upstream (e.g., LLVM official releases). CI validates the recipe but does not produce artifacts; users download directly from upstream. A Linux binary entry can list DT_NEEDED entries to remove (`source.binaries[].remove_needed`, e.g., `libatomic.so.1` from libc++ of LLVM). CI removes them with `patchelf` after checking that the file takes no symbol from the library, and pushes the result to `ghcr.io` as an ingot; `index.toml` then lists the ingot for that platform instead of the upstream archive. A macOS binary entry can likewise name libraries to build again from the source of the release (`source.binaries[].rebuild`). The macOS releases of LLVM from 20.1.0 on are linked with lld, and their `libunwind` cannot unwind a C++ exception; CI builds `libunwind` again with the system linker, checks that it keeps the install name, the minimum macOS and the exported symbols, and adds the `LICENSE.TXT` of the source, which the archive does not have at its top.
 - **build** — Builds from source (e.g., GCC). CI produces ingots and pushes them to `ghcr.io` as OCI artifacts. A build mold can list sources built into the toolchain (`source.build.in_tree`, e.g., GMP, MPFR, MPC and ISL for GCC) and packages installed alongside it (`source.build.companions`, e.g., binutils), so that the ingot runs without the libraries and tools of the machine that built it.
 
 ## Platform Tiers

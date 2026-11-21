@@ -26,6 +26,9 @@ MAX_API_RETRIES=3
 MOLDS_DIR="molds"
 INDEX_FILE="index.toml"
 
+# Binary entries that remove DT_NEEDED entries or rebuild libraries are cast.
+JQ_IS_CAST='def is_cast: .remove_needed or .rebuild;'
+
 # --- Colors (disabled if not a terminal) ---
 if [[ -t 1 ]]; then
     RED='\033[0;31m'
@@ -299,7 +302,7 @@ collect_build_ingots() {
 
 # --- Collect fetch-type ingots from mold.toml ---
 # Reads source.binaries[] directly from the parsed mold JSON, leaving out
-# the entries that remove DT_NEEDED entries (see collect_cast_fetch_ingots).
+# the entries that are cast (see collect_cast_fetch_ingots).
 # No CI artifacts or API calls needed — mold.toml is the single source of truth.
 # Args: $1 = mold JSON (parsed mold.toml as JSON string)
 # Output: JSON array of ingot objects on stdout
@@ -308,8 +311,8 @@ collect_fetch_ingots() {
     local glibc_min
     glibc_min=$(jq -r '.source.glibc_min // empty' <<< "$mold_json")
 
-    jq --arg glibc_min "$glibc_min" '
-        [.source.binaries[] | select(.remove_needed | not) | {
+    jq --arg glibc_min "$glibc_min" "${JQ_IS_CAST}"'
+        [.source.binaries[] | select(is_cast | not) | {
             platform,
             arch,
             url,
@@ -319,17 +322,17 @@ collect_fetch_ingots() {
 }
 
 # --- Collect ingots cast from fetch-type binaries ---
-# Binary entries that remove DT_NEEDED entries are published to the
-# registry like build-type ingots, and the upstream archive is never listed
-# in their place. A platform missing from the registry keeps the registry
-# entry of the current index, or is left out.
+# Binary entries that remove DT_NEEDED entries or rebuild libraries are
+# published to the registry like build-type ingots, and the upstream
+# archive is never listed in their place. A platform missing from the
+# registry keeps the registry entry of the current index, or is left out.
 # Args: $1 = mold JSON, $2 = family, $3 = version,
 #       $4 = registry ingots (JSON array, from collect_build_ingots)
 # Output: JSON array of ingot objects on stdout
 collect_cast_fetch_ingots() {
     local mold_json="$1" family="$2" version="$3" registry_ingots="$4"
     local cast_ids
-    cast_ids=$(jq -c '[.source.binaries[] | select(.remove_needed) | {platform, arch}]' <<< "$mold_json")
+    cast_ids=$(jq -c "${JQ_IS_CAST} [.source.binaries[] | select(is_cast) | {platform, arch}]" <<< "$mold_json")
     if [[ "$cast_ids" == "[]" ]]; then
         echo "[]"
         return
@@ -474,7 +477,7 @@ json.dump(data, sys.stdout)
     # offer the version, not what was built.
     registry_ingots="[]"
     if [[ "$source_type" == "build" ]] \
-        || jq -e '[.source.binaries[]? | select(.remove_needed)] | length > 0' \
+        || jq -e "${JQ_IS_CAST} [.source.binaries[]? | select(is_cast)] | length > 0" \
             <<< "$mold_json" >/dev/null; then
         registry_read=$(collect_build_ingots "$family" "$version")
         registry_ingots=$(jq -c '.ingots' <<< "$registry_read")
@@ -512,7 +515,7 @@ json.dump(data, sys.stdout)
     # Collect ingots based on source type
     if [[ "$source_type" == "fetch" ]]; then
         # Fetch type: upstream URLs from mold.toml, and OCI references for
-        # the binaries that remove DT_NEEDED entries
+        # the binaries that remove DT_NEEDED entries or rebuild libraries
         upstream_ingots=$(collect_fetch_ingots "$mold_json")
         cast_ingots=$(collect_cast_fetch_ingots "$mold_json" "$family" "$version" "$registry_ingots")
         if ! ingots=$(jq -n --argjson upstream "$upstream_ingots" --argjson cast "$cast_ingots" \

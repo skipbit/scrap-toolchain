@@ -3,9 +3,10 @@
 #
 # For fetch-type molds: downloads the upstream binary, verifies integrity
 # (SHA256), removes the DT_NEEDED entries the binary entry declares,
-# checks layout, license files, glibc compatibility, and runs a smoke
-# test. An ingot archive with metadata is produced only when entries were
-# removed.
+# rebuilds the libraries it declares from source, checks layout, license
+# files, glibc compatibility, and runs a smoke test. An ingot archive with
+# metadata is produced only when entries were removed or libraries
+# rebuilt.
 #
 # For build-type molds: downloads source, builds from source, creates an
 # ingot archive (tar.xz) with metadata. Supports 3-stage splitting for
@@ -24,7 +25,8 @@
 #   STAGE_ARTIFACT_DIR — Directory for intermediate stage artifacts.
 #                        Required when CAST_STAGE is set.
 #   CAST_FETCH_INGOT   — 0 skips creating the ingot of a fetch-type mold
-#                        with removed entries (validation only). Default: 1.
+#                        with removed entries or rebuilt libraries
+#                        (validation only). Default: 1.
 #
 # Exit codes:
 #   0 = Success (validation passed / ingot created)
@@ -450,7 +452,7 @@ if [[ "$SOURCE_TYPE" == "fetch" ]]; then
         exit 3
     fi
 
-    # --- Fetch type flow (validation; an ingot only with removed entries) ---
+    # --- Fetch type flow (validation; an ingot only when the archive is changed) ---
 
     # Reject fetch-type molds with patches defined (patches not supported for fetch type)
     PATCHES_COUNT=$(jq '.patches // [] | length' "$MOLD_JSON")
@@ -648,6 +650,42 @@ if [[ "$SOURCE_TYPE" == "fetch" ]]; then
     fi
     echo ""
 
+    # --- Step 7b: Rebuild libraries from source ---
+    # The license files are taken from the source as well, since the
+    # archive may have none at its top.
+    echo -e "${BOLD}7b. Rebuild libraries from source${RESET}"
+
+    REBUILD=$(echo "$BINARY_ENTRY" | jq -c '.rebuild // empty')
+    if [[ -z "$REBUILD" ]]; then
+        info "None declared"
+    else
+        REBUILD_SOURCE="${RUN_DIR}/rebuild-source"
+        fetch_source "$(jq -r '.source_url' <<< "$REBUILD")" \
+            "$(jq -r '.source_sha256' <<< "$REBUILD")" "$REBUILD_SOURCE" || exit $?
+        pass "Source verified and extracted"
+        LIBRARIES=$(jq -r '.libraries[]' <<< "$REBUILD")
+        while IFS= read -r library; do
+            if [[ "$library" != libunwind ]]; then
+                fail "Unknown library to rebuild: ${library}"
+                exit 2
+            fi
+            set +e
+            "${SCRIPT_DIR}/rebuild-libunwind.sh" "$STAGING_DIR" "$REBUILD_SOURCE"
+            RB_EXIT=$?
+            set -e
+            if [[ "$RB_EXIT" -ne 0 ]]; then
+                fail "Cannot rebuild ${library}"
+                add_summary "- :x: Cannot rebuild ${library}"
+                exit "$RB_EXIT"
+            fi
+            pass "Rebuilt ${library}"
+        done <<< "$LIBRARIES"
+        copy_license_files ".metadata" "$REBUILD_SOURCE" "$STAGING_DIR" || exit $?
+        pass "License files copied from the source"
+        rm -rf "$REBUILD_SOURCE"
+    fi
+    echo ""
+
     # --- Step 8: License file inclusion ---
     echo -e "${BOLD}8. License file inclusion${RESET}"
 
@@ -757,13 +795,14 @@ if [[ "$SOURCE_TYPE" == "fetch" ]]; then
     pass "Smoke test passed"
     echo ""
 
-    # --- Step 11: Create ingot (only when entries were removed) ---
+    # --- Step 11: Create ingot (only when entries were removed or
+    # libraries rebuilt) ---
     # The binaries no longer match the upstream archive, so they are
     # published as an ingot like build-type ones.
     echo -e "${BOLD}11. Create ingot${RESET}"
 
     INGOT_CREATED=false
-    if [[ -z "$REMOVE_NEEDED" ]]; then
+    if [[ -z "$REMOVE_NEEDED" && -z "$REBUILD" ]]; then
         info "Skipped (upstream archive is used as is)"
     elif [[ "$CAST_FETCH_INGOT" == 0 ]]; then
         info "Skipped (CAST_FETCH_INGOT=0)"
@@ -785,6 +824,9 @@ if [[ "$SOURCE_TYPE" == "fetch" ]]; then
     if [[ -n "$REMOVE_NEEDED" ]]; then
         REMOVE_COUNT=$(jq -s 'length' <<< "$REMOVE_NEEDED")
         add_summary "- :white_check_mark: DT_NEEDED entries removed: ${REMOVE_COUNT}"
+    fi
+    if [[ -n "$REBUILD" ]]; then
+        add_summary "- :white_check_mark: Rebuilt from source: $(jq -r '.libraries | join(", ")' <<< "$REBUILD")"
     fi
     if [[ -n "$GLIBC_VERSION" ]]; then
         add_summary "- :white_check_mark: glibc requirement: ${GLIBC_VERSION}"

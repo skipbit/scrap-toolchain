@@ -9,7 +9,9 @@
 #
 # On macOS, an ingot that holds libc++ is tested as scrap builds with it:
 # linked by the system linker against that libc++, which the program
-# must then load.
+# must then load. A second program, linked the same way with no flag of
+# the mold, must catch an exception through the libc++abi and libunwind
+# of the ingot and use RTTI.
 #
 # This script uses a fail-fast approach: each step exits immediately on failure
 # rather than accumulating errors, since later steps depend on earlier ones.
@@ -248,17 +250,19 @@ if [[ "$(uname -s)" == "Darwin" ]]; then
         done <<< "$LIBCXX_LIST"
     fi
 fi
-# The system linker reads the SDK of the system. libc++abi is named
-# on its own, as the libc++ of the ingot keeps it apart.
 if [[ ${#LIBCXX_DIRS[@]} -gt 0 ]]; then
+    # The system linker reads the SDK of the system. libc++abi is named
+    # on its own, as the libc++ of the ingot keeps it apart.
+    SCRAP_LINK_FLAGS=()
+    for dir in "${LIBCXX_DIRS[@]}"; do
+        SCRAP_LINK_FLAGS+=(-L "$dir" -Xlinker -rpath -Xlinker "$dir")
+    done
+    SCRAP_LINK_FLAGS+=(-lc++abi)
     SYSTEM_LINKER_CMD=()
     for arg in "${CMD_ARRAY[@]}"; do
         [[ "$arg" == "-fuse-ld=lld" ]] || SYSTEM_LINKER_CMD+=("$arg")
     done
-    for dir in "${LIBCXX_DIRS[@]}"; do
-        SYSTEM_LINKER_CMD+=(-L "$dir" -Xlinker -rpath -Xlinker "$dir")
-    done
-    CMD_ARRAY=("${SYSTEM_LINKER_CMD[@]}" -lc++abi)
+    CMD_ARRAY=("${SYSTEM_LINKER_CMD[@]}" "${SCRAP_LINK_FLAGS[@]}")
     info "Command with the system linker: ${CMD_ARRAY[*]}"
 fi
 
@@ -286,7 +290,7 @@ fi
 pass "Compilation succeeded"
 echo ""
 
-# Bounds the run of the C program (step 5) and the test program (step 6).
+# Bounds the run of each program the smoke test builds.
 TIMEOUT_CMD=""
 if command -v timeout &>/dev/null; then
     TIMEOUT_CMD="timeout"
@@ -295,6 +299,55 @@ elif command -v gtimeout &>/dev/null; then
 else
     warn "Neither 'timeout' nor 'gtimeout' found; running without timeout protection"
 fi
+
+# Runs <program> once with DYLD_PRINT_LIBRARIES and requires each named
+# library to be loaded from the ingot. dyld prints each library it loads
+# as "dyld[<pid>]: <uuid> <path>", the path being the file behind any
+# symlink. The system libraries load their own libc++, libc++abi and
+# libunwind as well, so one from the ingot is what is required.
+require_loaded_from_ingot() {
+    local program="$1" log="${1}.dyld" run_exit loaded matches lib name from_ingot ingot_real
+    shift
+    set +e
+    if [[ -n "$TIMEOUT_CMD" ]]; then
+        $TIMEOUT_CMD "$TIMEOUT" env DYLD_PRINT_LIBRARIES=1 "$program" > /dev/null 2> "$log"
+        run_exit=$?
+    else
+        DYLD_PRINT_LIBRARIES=1 "$program" > /dev/null 2> "$log"
+        run_exit=$?
+    fi
+    set -e
+    if [[ "$run_exit" -eq 124 && -n "$TIMEOUT_CMD" ]]; then
+        fail_msg "Execution with DYLD_PRINT_LIBRARIES timed out after ${TIMEOUT} seconds"
+        exit 1
+    fi
+    if [[ "$run_exit" -ne 0 ]]; then
+        fail_msg "Execution with DYLD_PRINT_LIBRARIES failed (exit code: ${run_exit})"
+        echo "  --- dyld output ---"
+        head -20 "$log" | sed 's/^/  /'
+        echo "  ---"
+        exit 1
+    fi
+    loaded=$(sed -n 's/^dyld\[[0-9]*\]: [^ ]* //p' "$log")
+    ingot_real=$(resolve_path "$INGOT_ROOT")
+    for name in "$@"; do
+        if ! matches=$(grep "/${name}\.[0-9.]*dylib\$" <<< "$loaded"); then
+            fail_msg "dyld did not report loading ${name}"
+            exit 1
+        fi
+        from_ingot=""
+        while IFS= read -r lib; do
+            if [[ "$(resolve_path "$lib")" == "${ingot_real}/"* ]]; then
+                from_ingot="$lib"
+            fi
+        done <<< "$matches"
+        if [[ -z "$from_ingot" ]]; then
+            fail_msg "${name} not loaded from the ingot (loaded: ${matches//$'\n'/, })"
+            exit 1
+        fi
+        pass "${name} loaded from the ingot: ${from_ingot}"
+    done
+}
 
 # --- Step 5: C compiler ---
 echo -e "${BOLD}5. C compiler${RESET}"
@@ -399,47 +452,8 @@ fi
 
 pass "Execution succeeded"
 
-# dyld prints each library it loads as "dyld[<pid>]: <uuid> <path>", the
-# path being the file behind any symlink. The system libraries load the
-# libc++ of the system as well, so one from the ingot is what is required.
 if [[ ${#LIBCXX_DIRS[@]} -gt 0 ]]; then
-    set +e
-    if [[ -n "$TIMEOUT_CMD" ]]; then
-        $TIMEOUT_CMD "$TIMEOUT" env DYLD_PRINT_LIBRARIES=1 "${WORK_DIR}/hello" > /dev/null 2> "${WORK_DIR}/dyld"
-        DYLD_RUN_EXIT=$?
-    else
-        DYLD_PRINT_LIBRARIES=1 "${WORK_DIR}/hello" > /dev/null 2> "${WORK_DIR}/dyld"
-        DYLD_RUN_EXIT=$?
-    fi
-    set -e
-    if [[ "$DYLD_RUN_EXIT" -eq 124 && -n "$TIMEOUT_CMD" ]]; then
-        fail_msg "Execution with DYLD_PRINT_LIBRARIES timed out after ${TIMEOUT} seconds"
-        exit 1
-    fi
-    if [[ "$DYLD_RUN_EXIT" -ne 0 ]]; then
-        fail_msg "Execution with DYLD_PRINT_LIBRARIES failed (exit code: ${DYLD_RUN_EXIT})"
-        echo "  --- dyld output ---"
-        head -20 "${WORK_DIR}/dyld" | sed 's/^/  /'
-        echo "  ---"
-        exit 1
-    fi
-    LOADED_PATHS=$(sed -n 's/^dyld\[[0-9]*\]: [^ ]* //p' "${WORK_DIR}/dyld")
-    if ! LOADED_LIBCXX=$(grep '/libc++\.[0-9.]*dylib$' <<< "$LOADED_PATHS"); then
-        fail_msg "dyld did not report loading libc++"
-        exit 1
-    fi
-    INGOT_REAL=$(resolve_path "$INGOT_ROOT")
-    LIBCXX_FROM_INGOT=""
-    while IFS= read -r lib; do
-        if [[ "$(resolve_path "$lib")" == "${INGOT_REAL}/"* ]]; then
-            LIBCXX_FROM_INGOT="$lib"
-        fi
-    done <<< "$LOADED_LIBCXX"
-    if [[ -z "$LIBCXX_FROM_INGOT" ]]; then
-        fail_msg "libc++ not loaded from the ingot (loaded: ${LOADED_LIBCXX//$'\n'/, })"
-        exit 1
-    fi
-    pass "libc++ loaded from the ingot: ${LIBCXX_FROM_INGOT}"
+    require_loaded_from_ingot "${WORK_DIR}/hello" libc++
 fi
 echo ""
 
@@ -456,6 +470,73 @@ else
     exit 1
 fi
 echo ""
+
+# --- Step 8: Exceptions with the libc++ of the ingot ---
+# A program linked as scrap links it must catch an exception thrown
+# through the libc++abi and libunwind of the ingot, and use RTTI.
+if [[ ${#LIBCXX_DIRS[@]} -gt 0 ]]; then
+    echo -e "${BOLD}8. Exceptions with the libc++ of the ingot${RESET}"
+
+    cat > "${WORK_DIR}/exceptions.cpp" <<'CXX_SOURCE'
+#include <cstdio>
+#include <stdexcept>
+#include <typeinfo>
+struct Base { virtual ~Base() = default; };
+struct Derived : Base {};
+int main() {
+    int ok = 0;
+    try {
+        throw std::runtime_error("thrown");
+    } catch (const std::exception&) {
+        ok += 1;
+    }
+    Derived derived;
+    Base* base = &derived;
+    if (dynamic_cast<Derived*>(base) != nullptr && typeid(*base) == typeid(Derived)) {
+        ok += 1;
+    }
+    std::printf("ok=%d\n", ok);
+    return ok == 2 ? 0 : 1;
+}
+CXX_SOURCE
+    EXCEPTIONS_CMD=("$COMPILER_PATH" -o exceptions exceptions.cpp "${SCRAP_LINK_FLAGS[@]}")
+    info "Command: ${EXCEPTIONS_CMD[*]}"
+
+    set +e
+    EXCEPTIONS_COMPILE_OUTPUT=$(cd "$WORK_DIR" && "${EXCEPTIONS_CMD[@]}" 2>&1)
+    EXCEPTIONS_COMPILE_EXIT=$?
+    set -e
+    if [[ "$EXCEPTIONS_COMPILE_EXIT" -ne 0 ]]; then
+        fail_msg "Compilation failed (exit code: ${EXCEPTIONS_COMPILE_EXIT})"
+        if [[ -n "$EXCEPTIONS_COMPILE_OUTPUT" ]]; then
+            echo "  --- compiler output ---"
+            # shellcheck disable=SC2001  # indents every line of the output
+            echo "$EXCEPTIONS_COMPILE_OUTPUT" | sed 's/^/  /'
+            echo "  ---"
+        fi
+        exit 1
+    fi
+
+    set +e
+    if [[ -n "$TIMEOUT_CMD" ]]; then
+        EXCEPTIONS_OUTPUT=$($TIMEOUT_CMD "$TIMEOUT" "${WORK_DIR}/exceptions" 2>&1)
+    else
+        EXCEPTIONS_OUTPUT=$("${WORK_DIR}/exceptions" 2>&1)
+    fi
+    EXCEPTIONS_EXIT=$?
+    set -e
+    if [[ "$EXCEPTIONS_EXIT" -eq 124 && -n "$TIMEOUT_CMD" ]]; then
+        fail_msg "Exception test timed out after ${TIMEOUT} seconds"
+        exit 1
+    fi
+    if [[ "$EXCEPTIONS_EXIT" -ne 0 || "$EXCEPTIONS_OUTPUT" != "ok=2" ]]; then
+        fail_msg "Exception test failed (exit code: ${EXCEPTIONS_EXIT}, output: ${EXCEPTIONS_OUTPUT})"
+        exit 1
+    fi
+    pass "Exception caught and RTTI used with the libc++ of the ingot"
+    require_loaded_from_ingot "${WORK_DIR}/exceptions" libc++abi libunwind
+    echo ""
+fi
 
 # --- Summary ---
 echo -e "${BOLD}Summary${RESET}"

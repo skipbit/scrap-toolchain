@@ -235,7 +235,8 @@
           "uniqueItems": true,
           "items": { "$ref": "#/$defs/removeNeeded" },
           "description": "DT_NEEDED entries to remove from ELF files of the archive. CI publishes the result as an ingot instead of pointing to the archive."
-        }
+        },
+        "rebuild": { "$ref": "#/$defs/rebuild" }
       },
       "if": {
         "properties": { "platform": { "const": "darwin" } },
@@ -243,6 +244,34 @@
       },
       "then": {
         "not": { "required": ["remove_needed"] }
+      },
+      "else": {
+        "not": { "required": ["rebuild"] }
+      }
+    },
+    "rebuild": {
+      "type": "object",
+      "required": ["libraries", "source_url", "source_sha256"],
+      "additionalProperties": false,
+      "description": "Libraries of the archive to build again from source. CI publishes the result as an ingot instead of pointing to the archive.",
+      "properties": {
+        "libraries": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": { "type": "string", "enum": ["libunwind"] },
+          "description": "Libraries to build again"
+        },
+        "source_url": {
+          "type": "string",
+          "format": "uri",
+          "description": "Download URL for the source archive of the release"
+        },
+        "source_sha256": {
+          "type": "string",
+          "pattern": "^[a-f0-9]{64}$",
+          "description": "SHA-256 checksum of the source archive"
+        }
       }
     },
     "removeNeeded": {

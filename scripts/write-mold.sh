@@ -5,7 +5,8 @@
 #   Run from the repository root directory.
 #
 # Copies the base mold and changes only the version, the download URLs and
-# their checksums; everything else is carried over for review. Binaries whose
+# their checksums, the source URLs of rebuilt libraries included;
+# everything else is carried over for review. Binaries whose
 # file names are given as missing-file are left out.
 #
 # Checksums of GitHub release assets come from the digest GitHub records for
@@ -67,14 +68,20 @@ checksum() {
     echo "$digest"
 }
 
-# The new URLs are the base URLs with the version replaced.
-NEW_URLS=$(python3 - "${BASE_DIR}/mold.toml" "$BASE_VERSION" "$VERSION" <<'EOF'
+# The new URLs are the base URLs with the version replaced. Archives named
+# as missing are left out, and so is the source of a library rebuilt in
+# their binary.
+NEW_URLS=$(python3 - "${BASE_DIR}/mold.toml" "$BASE_VERSION" "$VERSION" ${MISSING[@]+"${MISSING[@]}"} <<'EOF'
 import sys, tomllib
-path, old, new = sys.argv[1:]
+path, old, new, *missing = sys.argv[1:]
 with open(path, 'rb') as f:
     source = tomllib.load(f)['source']
-urls = [b['url'] for b in source.get('binaries', [])]
-if 'build' in source:
+def is_kept(url):
+    return url.replace(old, new).rsplit('/', 1)[1] not in missing
+binaries = [b for b in source.get('binaries', []) if is_kept(b['url'])]
+urls = [b['url'] for b in binaries]
+urls += [b['rebuild']['source_url'] for b in binaries if 'rebuild' in b]
+if 'build' in source and is_kept(source['build']['source_url']):
     urls.append(source['build']['source_url'])
 for url in urls:
     if old not in url:
@@ -85,18 +92,14 @@ EOF
 
 CHECKSUMS='{}'
 while read -r url; do
-    name="${url##*/}"
-    if [[ " ${MISSING[*]} " == *" ${name} "* ]]; then
-        continue
-    fi
-    log "${FAMILY} ${VERSION}: ${name}"
+    log "${FAMILY} ${VERSION}: ${url##*/}"
     digest=$(checksum "$url")
     CHECKSUMS=$(jq --arg u "$url" --arg d "$digest" '. + {($u): $d}' <<< "$CHECKSUMS")
 done <<< "$NEW_URLS"
 
 mkdir -p "$NEW_DIR"
 python3 - "${BASE_DIR}/mold.toml" "${NEW_DIR}/mold.toml" "$BASE_VERSION" "$VERSION" \
-    "$CHECKSUMS" "${MISSING[@]}" <<'EOF' || { rm -rf "$NEW_DIR"; die "cannot write ${NEW_DIR}/mold.toml"; }
+    "$CHECKSUMS" ${MISSING[@]+"${MISSING[@]}"} <<'EOF' || { rm -rf "$NEW_DIR"; die "cannot write ${NEW_DIR}/mold.toml"; }
 import json, re, sys, tomllib
 src, dst, old, new, checksums, *missing = sys.argv[1:]
 checksums = json.loads(checksums)
@@ -141,9 +144,15 @@ for line in lines:
     current.append(line)
 blocks.append(current)
 
-out = []
+# The rebuild table of a binary entry goes with the entry.
+out, dropped = [], False
 for block in blocks:
-    out += process_block(block)
+    if block[0].strip() == '[source.binaries.rebuild]' and dropped:
+        continue
+    processed = process_block(block)
+    if block[0].strip() == '[[source.binaries]]':
+        dropped = not processed
+    out += processed
 open(dst, 'w').write(''.join(out))
 
 # The result must parse, name the new version, and every binary and build
@@ -152,6 +161,8 @@ with open(dst, 'rb') as f:
     mold = tomllib.load(f)
 source = mold['source']
 pairs = [(b['url'], b['sha256']) for b in source.get('binaries', [])]
+pairs += [(b['rebuild']['source_url'], b['rebuild']['source_sha256'])
+          for b in source.get('binaries', []) if 'rebuild' in b]
 if 'build' in source:
     pairs.append((source['build']['source_url'], source['build']['source_sha256']))
 if mold['metadata']['version'] != new:
