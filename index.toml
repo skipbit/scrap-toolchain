@@ -1,6 +1,6 @@
 [index]
 schema_version = 1
-generated_at = "2026-11-22T16:17:45Z"
+generated_at = "2026-11-22T17:03:49Z"
 generator = "scripts/generate-index.sh"
 
 [[toolchains]]
@@ -1445,9 +1445,10 @@ c_compiler = "clang"
 [[toolchains.ingots]]
 platform = "darwin"
 arch = "aarch64"
-origin = "upstream"
-url = "https://github.com/llvm/llvm-project/releases/download/llvmorg-20.1.7/LLVM-20.1.7-macOS-ARM64.tar.xz"
-sha256 = "6aa75de00575ad0663183b00f00f39992ded611b5136e57649ace1e6a53c0d16"
+origin = "scrap-release"
+registry = "ghcr.io/skipbit/scrap-toolchain"
+tag = "llvm:20.1.7"
+digest = "sha256:bb81c9d42aed9dd51baf0e6db84c224299e5632e50ee47cd6e654fc16628e8e9"
 
 [[toolchains.ingots]]
 platform = "linux"
@@ -1455,7 +1456,7 @@ arch = "aarch64"
 origin = "scrap-release"
 registry = "ghcr.io/skipbit/scrap-toolchain"
 tag = "llvm:20.1.7"
-digest = "sha256:cbbf1f2b95bdcfbfab342a5f8b72ec2bced12c43480922e9c3b4b80003011128"
+digest = "sha256:f4d25ab285c3082627bf887cab6d00aa86a370ac6683668eb4b2fefbb937eaa3"
 glibc_version = "2.34"
 
 [[toolchains.ingots]]
@@ -1464,7 +1465,7 @@ arch = "x86_64"
 origin = "scrap-release"
 registry = "ghcr.io/skipbit/scrap-toolchain"
 tag = "llvm:20.1.7"
-digest = "sha256:2805aa0754e60bfb766c394d33addcf7c082f1db346a8bc84e3591934a4d3b2e"
+digest = "sha256:29cfd31e316019269a9f7515050dd26b481f556c8729345f776579654456caba"
 glibc_version = "2.34"
 
 [[toolchains]]
