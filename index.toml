@@ -1,6 +1,6 @@
 [index]
 schema_version = 1
-generated_at = "2026-11-24T12:52:20Z"
+generated_at = "2026-11-24T15:36:08Z"
 generator = "scripts/generate-index.sh"
 
 [[toolchains]]
@@ -646,7 +646,7 @@ arch = "aarch64"
 origin = "scrap-release"
 registry = "ghcr.io/skipbit/scrap-toolchain"
 tag = "llvm:17.0.1"
-digest = "sha256:f93acedeaa2b20689763585f3ee528bdd6966436f9f2050fe3f627094e3c3e09"
+digest = "sha256:b65eb410439d6ab813a427eafdb856e6eb4643e946cf1f3e0e2c2b42c6ec4bbd"
 glibc_version = "2.30"
 
 [[toolchains]]
