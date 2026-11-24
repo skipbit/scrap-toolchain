@@ -724,7 +724,10 @@ jobs:
   #     platform-specific tag (e.g., gcc:14.2.0-linux-x86_64)
   #   - Create an OCI Index manifest combining all platforms under the
   #     version tag (e.g., gcc:14.2.0)
-  #   - Output package-manifest JSON for downstream index generation
+  #   - Output package-manifest JSON for downstream index generation,
+  #     with the ingot-metadata JSON of each pushed mold
+  #   - Download the ingots of one mold at a time, since those of all
+  #     molds do not fit on the disk of one runner
   #   - Partial release prevention: skip molds missing any platform they
   #     cast (Tier 1 platforms for build-type molds, those removing
   #     DT_NEEDED entries or rebuilding libraries for fetch-type molds)
@@ -745,6 +748,11 @@ jobs:
           || needs.detect-build-targets.outputs.has_fetch_targets == 'true')
       && !contains(needs.*.result, 'cancelled')
     runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      packages: write
+      # To list and download the artifacts of this run.
+      actions: read
     steps:
       - uses: actions/checkout@v7
 
@@ -758,15 +766,6 @@ jobs:
           GHCR_TOKEN: ${{ github.token }}
           GHCR_USER: ${{ github.actor }}
         run: echo "$GHCR_TOKEN" | oras login ghcr.io -u "$GHCR_USER" --password-stdin
-
-      - name: Download all artifacts
-        id: download
-        uses: actions/download-artifact@v8
-        with:
-          path: artifacts/
-          pattern: ingot-*
-          merge-multiple: true
-        continue-on-error: true
 
       - name: Push to ghcr.io and generate package manifests
         env:
@@ -782,39 +781,61 @@ jobs:
           INDEX_DIR="oci-indexes"
           mkdir -p "$INDEX_DIR"
 
-          # Collect all ingot-metadata JSON files.
-          # When build stages were skipped (e.g., partial failure), there may
-          # be no artifacts at all — handle gracefully.
-          mkdir -p artifacts/
-          mapfile -t METADATA_FILES < <(find artifacts/ -name 'ingot-metadata-*.json' -type f 2>/dev/null | sort)
+          # The ingots of all molds can outgrow the disk of one runner, so
+          # they are downloaded one mold at a time and removed before the
+          # next. An ingot artifact is named
+          # ingot-<family>-<version>-<platform>-<arch>. When build stages
+          # were skipped (e.g., partial failure), there may be none.
+          ARTIFACT_NAMES=$(gh api --paginate \
+            "repos/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}/artifacts" \
+            --jq '.artifacts[].name')
+          mapfile -t MOLD_KEYS < <(sed -n 's/^ingot-\(.*\)-[^-]*-[^-]*$/\1/p' <<< "$ARTIFACT_NAMES" | sort -u)
 
-          if [[ ${#METADATA_FILES[@]} -eq 0 ]]; then
-            echo "::warning::No ingot metadata files found — build stages may have been skipped"
+          if [[ ${#MOLD_KEYS[@]} -eq 0 ]]; then
+            echo "::warning::No ingot artifacts found — build stages may have been skipped"
             echo ""
             echo "=== Summary: 0 pushed, 0 skipped, 0 failed ==="
             exit 0
           fi
 
-          # Group metadata by family-version (newline-delimited for robustness)
-          declare -A MOLD_META_FILES
-
-          for meta_file in "${METADATA_FILES[@]}"; do
-            FAMILY=$(jq -r '.family' "$meta_file")
-            VERSION=$(jq -r '.version' "$meta_file")
-            KEY="${FAMILY}/${VERSION}"
-            MOLD_META_FILES["$KEY"]+="${meta_file}"$'\n'
-          done
-
           PUSH_COUNT=0
           SKIP_COUNT=0
           FAILURE_COUNT=0
 
-          mapfile -t SORTED_KEYS < <(printf '%s\n' "${!MOLD_META_FILES[@]}" | sort)
-          for key in "${SORTED_KEYS[@]}"; do
-            mapfile -t META_LIST <<< "${MOLD_META_FILES[$key]}"
-            # Remove trailing empty element from trailing newline
-            [[ -z "${META_LIST[-1]}" ]] && unset 'META_LIST[-1]'
+          for mold_key in "${MOLD_KEYS[@]}"; do
+            df -h /
+            DOWNLOADED=false
+            for attempt in 1 2; do
+              rm -rf artifacts/
+              if gh run download "$GITHUB_RUN_ID" -R "$GITHUB_REPOSITORY" \
+                -p "ingot-${mold_key}-*" -D artifacts/; then
+                DOWNLOADED=true
+                break
+              fi
+              if [[ "$attempt" -lt 2 ]]; then
+                echo "  Download failed (attempt ${attempt}), retrying..."
+                sleep 3
+              fi
+            done
+            if [[ "$DOWNLOADED" != "true" ]]; then
+              echo "::error::Cannot download the ingots of ${mold_key}"
+              FAILURE_COUNT=$((FAILURE_COUNT + 1))
+              continue
+            fi
+            mapfile -t META_LIST < <(find artifacts/ -name 'ingot-metadata-*.json' -type f | sort)
             PLATFORM_COUNT=${#META_LIST[@]}
+            if [[ "$PLATFORM_COUNT" -eq 0 ]]; then
+              echo "::error::No ingot metadata in the artifacts of ${mold_key}"
+              FAILURE_COUNT=$((FAILURE_COUNT + 1))
+              continue
+            fi
+            key=$(jq -r '.family + "/" + .version' "${META_LIST[0]}")
+            if [[ "${key/\//-}" != "$mold_key" ]] \
+              || ! jq -es --arg key "$key" 'all(.family + "/" + .version == $key)' "${META_LIST[@]}" > /dev/null; then
+              echo "::error::The ingot metadata of ${mold_key} names another mold"
+              FAILURE_COUNT=$((FAILURE_COUNT + 1))
+              continue
+            fi
 
             # Determine expected platform count: intersect the platforms the
             # mold casts with Tier 1 platforms. A fetch-type mold casts those
@@ -1111,6 +1132,9 @@ jobs:
                 assets: $assets,
                 created_at: $created_at
               }' > "${MANIFEST_DIR}/package-manifest-${FAMILY}-${VERSION}.json"
+
+            # Index Update reads the metadata next to the package manifests.
+            cp "${META_LIST[@]}" "$MANIFEST_DIR/"
 
             echo "  Package manifest written"
             PUSH_COUNT=$((PUSH_COUNT + 1))

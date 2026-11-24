@@ -42,23 +42,21 @@ jobs:
         with:
           python-version: '3.12'
 
-      # Download artifacts from the triggering ingot-cast run.
-      # Downloads all artifacts (package-manifest JSON + ingot metadata).
-      # Only the JSON files are used by generate-index.sh, but selective
-      # download within an artifact is not supported by download-artifact.
-      # When the run has no artifacts (it skipped the builds, or they
-      # expired), the download still succeeds and creates no directory.
-      # generate-index.sh falls back to the OCI Registry API for each mold
-      # whose package-manifest is absent.
+      # Download the package manifests of the triggering ingot-cast run,
+      # which upload-package writes with the ingot metadata of each mold
+      # it pushed. The ingots themselves are not needed here. When the run
+      # has no such artifact (it skipped the builds, or it expired), the
+      # download fails. generate-index.sh falls back to the OCI Registry
+      # API for each mold whose package-manifest is absent.
       - name: Download artifacts
         if: github.event_name == 'workflow_run'
         continue-on-error: true
         uses: actions/download-artifact@v8
         with:
+          name: package-manifest
           run-id: ${{ github.event.workflow_run.id }}
           github-token: ${{ github.token }}
           path: artifacts/
-          merge-multiple: true
 
       - name: Report artifact status
         if: github.event_name == 'workflow_run'

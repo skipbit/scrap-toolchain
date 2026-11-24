@@ -1,4 +1,4 @@
-name: Scrap Run Check
+name: scrap run check
 
 # Installs the macOS toolchains of an index with a release of scrap, and
 # runs a program built with each of them. Run it by hand after the macOS
