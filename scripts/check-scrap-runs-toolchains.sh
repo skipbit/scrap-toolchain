@@ -32,7 +32,8 @@ VERSION=$("$SCRAP" --version) || { echo "Error: ${SCRAP} cannot run"; exit 2; }
 echo "${VERSION}, macOS $(sw_vers -productVersion), $(uname -m)"
 
 # The real path, since dyld reports libraries by it.
-WORK_DIR=$(cd "$(mktemp -d)" && pwd -P)
+WORK_DIR=$(mktemp -d) || { echo "Error: cannot make a work directory"; exit 2; }
+WORK_DIR=$(cd "$WORK_DIR" && pwd -P)
 trap 'rm -rf "$WORK_DIR"' EXIT
 
 LOG="${WORK_DIR}/log"
