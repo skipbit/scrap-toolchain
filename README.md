@@ -29,6 +29,7 @@ scrap-toolchain/
    - **fetch** molds: no artifacts produced (validation already done in step 2), except for the Linux binaries that remove DT_NEEDED entries and the macOS binaries that rebuild libraries, which CI changes and pushes to `ghcr.io` as ingots
    - **build** molds: CI builds the toolchain and pushes ingots to `ghcr.io` as OCI artifacts
 4. **Index Update** — `index.toml` is regenerated from mold definitions and build artifacts, then committed to the repository
+5. **Scrap Run Check**, run by hand after the macOS toolchains of the index change, installs each of them with a release of scrap on macOS, and checks that a program built with it catches an exception, through `scrap run` and on its own, with the runtime libraries of the toolchain
 
 ## Mold Types
 
