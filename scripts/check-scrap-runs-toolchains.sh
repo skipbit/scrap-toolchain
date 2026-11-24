@@ -23,6 +23,11 @@ set -uo pipefail
 [[ $# -ge 2 ]] || { echo "Usage: check-scrap-runs-toolchains.sh <scrap> <specifier>..."; exit 2; }
 SCRAP="$1"
 shift
+# An absolute path, since the steps run scrap from other directories.
+if [[ "$SCRAP" == */* ]]; then
+    SCRAP_DIR=$(cd "$(dirname "$SCRAP")" && pwd -P) || { echo "Error: no directory for ${SCRAP}"; exit 2; }
+    SCRAP="${SCRAP_DIR}/$(basename "$SCRAP")"
+fi
 
 PROJECT="throwcheck"
 LIBRARIES=(libc++ libc++abi libunwind)
@@ -83,14 +88,16 @@ EOF
 # Checks one toolchain. Prints a line for each step and returns 1 on the
 # first failure.
 check() {
-    local spec="$1" root rc program loaded name path
+    local spec="$1" root rc program loaded name paths
     rm -rf "$SCRAP_HOME" "${WORK_DIR:?}/${PROJECT}"
     echo "${spec}:"
 
     if ! "$SCRAP" toolchain install "$spec" > "$LOG" 2>&1; then
         fail "$spec" install; return 1
     fi
-    "$SCRAP" toolchain info "$spec" > "$LOG" 2>&1
+    if ! "$SCRAP" toolchain info "$spec" > "$LOG" 2>&1; then
+        fail "$spec" info; return 1
+    fi
     echo "  source: $(sed -n 's/^source: *//p' "$LOG")"
     root=$(sed -n 's/^directory: *//p' "$LOG")
     [[ -n "$root" ]] || { fail "$spec" "no directory in toolchain info"; return 1; }
@@ -116,9 +123,10 @@ check() {
 
     loaded=$(loaded_libraries "$program")
     for name in "${LIBRARIES[@]}"; do
-        path=$(grep -m 1 "/${name}\.[0-9.]*dylib\$" <<< "$loaded")
-        if [[ "$path" != "${root}/"* ]]; then
-            echo "FAIL: ${spec}: ${name} is not loaded from the toolchain: ${path:-not loaded}"; return 1
+        # macOS loads its own copy of each library too, in an order of its own.
+        paths=$(grep "/${name}\.[0-9.]*dylib\$" <<< "$loaded")
+        if ! awk -v prefix="${root}/" 'index($0, prefix) == 1 { found = 1 } END { exit !found }' <<< "$paths"; then
+            echo "FAIL: ${spec}: ${name} is not loaded from the toolchain: ${paths:-not loaded}" | paste -sd ' ' -; return 1
         fi
     done
     echo "  loaded from the toolchain: ${LIBRARIES[*]}"
