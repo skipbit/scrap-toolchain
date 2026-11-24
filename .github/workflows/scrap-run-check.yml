@@ -46,6 +46,7 @@ jobs:
           if [[ -z "$SCRAP_VERSION" ]]; then
             SCRAP_VERSION=$(gh release view -R skipbit/scrap --json tagName --jq '.tagName | ltrimstr("v")')
           fi
+          SCRAP_VERSION=${SCRAP_VERSION#v}
           ARCHIVE="scrap-${SCRAP_VERSION}-darwin-aarch64.tar.gz"
           DIR="${RUNNER_TEMP}/scrap"
           mkdir -p "$DIR"
