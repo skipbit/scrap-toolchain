@@ -803,9 +803,20 @@ jobs:
           FAILURE_COUNT=0
 
           for mold_key in "${MOLD_KEYS[@]}"; do
-            rm -rf artifacts/
-            if ! gh run download "$GITHUB_RUN_ID" -R "$GITHUB_REPOSITORY" \
-              -p "ingot-${mold_key}-*" -D artifacts/; then
+            DOWNLOADED=false
+            for attempt in 1 2; do
+              rm -rf artifacts/
+              if gh run download "$GITHUB_RUN_ID" -R "$GITHUB_REPOSITORY" \
+                -p "ingot-${mold_key}-*" -D artifacts/; then
+                DOWNLOADED=true
+                break
+              fi
+              if [[ "$attempt" -lt 2 ]]; then
+                echo "  Download failed (attempt ${attempt}), retrying..."
+                sleep 3
+              fi
+            done
+            if [[ "$DOWNLOADED" != "true" ]]; then
               echo "::error::Cannot download the ingots of ${mold_key}"
               FAILURE_COUNT=$((FAILURE_COUNT + 1))
               continue
