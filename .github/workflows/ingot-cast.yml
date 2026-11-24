@@ -803,6 +803,7 @@ jobs:
           FAILURE_COUNT=0
 
           for mold_key in "${MOLD_KEYS[@]}"; do
+            df -h /
             DOWNLOADED=false
             for attempt in 1 2; do
               rm -rf artifacts/
