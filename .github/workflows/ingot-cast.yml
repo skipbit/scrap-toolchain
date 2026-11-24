@@ -824,8 +824,6 @@ jobs:
               FAILURE_COUNT=$((FAILURE_COUNT + 1))
               continue
             fi
-            # Index Update reads the metadata next to the package manifests.
-            cp "${META_LIST[@]}" "$MANIFEST_DIR/"
 
             # Determine expected platform count: intersect the platforms the
             # mold casts with Tier 1 platforms. A fetch-type mold casts those
@@ -1122,6 +1120,9 @@ jobs:
                 assets: $assets,
                 created_at: $created_at
               }' > "${MANIFEST_DIR}/package-manifest-${FAMILY}-${VERSION}.json"
+
+            # Index Update reads the metadata next to the package manifests.
+            cp "${META_LIST[@]}" "$MANIFEST_DIR/"
 
             echo "  Package manifest written"
             PUSH_COUNT=$((PUSH_COUNT + 1))
