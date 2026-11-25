@@ -48,6 +48,8 @@ STAGE_ARTIFACT_DIR="${STAGE_ARTIFACT_DIR:-}"
 CAST_FETCH_INGOT="${CAST_FETCH_INGOT:-1}"
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=scripts/lib/paths.sh
+source "${SCRIPT_DIR}/lib/paths.sh"
 MAX_DL_RETRIES=3
 GLIBC_BASELINE=$(python3 -c "
 try:
@@ -165,8 +167,7 @@ copy_license_files() {
     local entry="$1" source="$2" dest="$3" lic
     while IFS= read -r lic; do
         [[ -n "$lic" ]] || continue
-        if [[ "$lic" == /* || "$lic" == ../* || "$lic" == */../* || \
-              "$lic" == */.. || "$lic" == .. ]]; then
+        if is_unsafe_path "$lic"; then
             fail "License file path contains traversal or is absolute: ${lic}"
             return 2
         fi
@@ -579,9 +580,7 @@ if [[ "$SOURCE_TYPE" == "fetch" ]]; then
     CONTENT_DIR="$EXTRACT_DIR"
     if [[ -n "$ROOT_DIR" ]]; then
         # Reject path traversal in root_dir
-        if [[ "$ROOT_DIR" == /* || "$ROOT_DIR" == ../* || \
-              "$ROOT_DIR" == */../* || "$ROOT_DIR" == */.. || \
-              "$ROOT_DIR" == .. ]]; then
+        if is_unsafe_path "$ROOT_DIR"; then
             fail "root_dir contains traversal or is absolute: ${ROOT_DIR}"
             exit 2
         fi
@@ -700,9 +699,7 @@ if [[ "$SOURCE_TYPE" == "fetch" ]]; then
         LIC_FILE=$(jq -r ".metadata.license_files[$idx]" "$MOLD_JSON")
 
         # Reject path traversal in license file names
-        if [[ "$LIC_FILE" == /* || "$LIC_FILE" == ../* || \
-              "$LIC_FILE" == */../* || "$LIC_FILE" == */.. || \
-              "$LIC_FILE" == .. ]]; then
+        if is_unsafe_path "$LIC_FILE"; then
             fail "License file path contains traversal or is absolute: ${LIC_FILE}"
             exit 2
         fi
@@ -1028,9 +1025,7 @@ elif [[ "$SOURCE_TYPE" == "build" ]]; then
                 fi
 
                 # Reject path traversal
-                if [[ "$PATCH_FILE" == /* || "$PATCH_FILE" == ../* || \
-                      "$PATCH_FILE" == */../* || "$PATCH_FILE" == */.. || \
-                      "$PATCH_FILE" == .. ]]; then
+                if is_unsafe_path "$PATCH_FILE"; then
                     fail "Patch file path contains traversal: ${PATCH_FILE}"
                     exit 2
                 fi
@@ -1475,9 +1470,7 @@ elif [[ "$SOURCE_TYPE" == "build" ]]; then
             LIC_FILE=$(jq -r ".metadata.license_files[$idx]" "$MOLD_JSON")
 
             # Reject path traversal
-            if [[ "$LIC_FILE" == /* || "$LIC_FILE" == ../* || \
-                  "$LIC_FILE" == */../* || "$LIC_FILE" == */.. || \
-                  "$LIC_FILE" == .. ]]; then
+            if is_unsafe_path "$LIC_FILE"; then
                 fail "License file path contains traversal or is absolute: ${LIC_FILE}"
                 exit 2
             fi

@@ -14,6 +14,9 @@
 
 set -euo pipefail
 
+# shellcheck source=scripts/lib/paths.sh
+source "$(dirname "${BASH_SOURCE[0]}")/lib/paths.sh"
+
 MOLD_DIR="${1:?Usage: validate-mold.sh <mold-directory>}"
 MOLD_DIR="${MOLD_DIR%/}"
 SCHEMA_PATH="${SCHEMA_PATH:-schema/mold-v1.schema.json}"
@@ -415,7 +418,7 @@ else
     for idx in $(seq 0 $((PATCHES_COUNT - 1))); do
         PATCH_FILE=$(jq -r ".patches[$idx].file" "$MOLD_JSON_FILE")
         # Reject absolute paths and ".." as a path component
-        if [[ "$PATCH_FILE" == /* || "$PATCH_FILE" == ../* || "$PATCH_FILE" == */../* || "$PATCH_FILE" == */.. || "$PATCH_FILE" == .. ]]; then
+        if is_unsafe_path "$PATCH_FILE"; then
             fail "Patch path contains traversal or is absolute: ${PATCH_FILE}"
             add_summary "- :x: Invalid patch path: ${PATCH_FILE}"
             PATCH_FAILURES=$((PATCH_FAILURES + 1))
