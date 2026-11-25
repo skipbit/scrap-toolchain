@@ -17,6 +17,10 @@ type = "fetch"
 glibc_min = "2.34"
 glibc_exclude = ["bin/llvm-exegesis", "bin/bbc", "bin/flang-20"]
 
+[source.upstream]
+url = "https://github.com/llvm/llvm-project/releases/download/llvmorg-20.1.8/llvm-project-20.1.8.src.tar.xz"
+sha256 = "6898f963c8e938981e6c4a302e83ec5beb4630147c7311183cf61069af16333d"
+
 [[source.binaries]]
 platform = "linux"
 arch = "x86_64"
@@ -43,8 +47,6 @@ sha256 = "a9a22f450d35f1f73cd61ab6a17c6f27d8f6051d56197395c1eb397f0c9bbec4"
 
 [source.binaries.rebuild]
 libraries = ["libunwind"]
-source_url = "https://github.com/llvm/llvm-project/releases/download/llvmorg-20.1.8/llvm-project-20.1.8.src.tar.xz"
-source_sha256 = "6898f963c8e938981e6c4a302e83ec5beb4630147c7311183cf61069af16333d"
 
 [test]
 hello_world_source = """

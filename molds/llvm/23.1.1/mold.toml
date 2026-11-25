@@ -17,6 +17,10 @@ type = "fetch"
 glibc_min = "2.34"
 glibc_exclude = ["bin/llvm-exegesis"]
 
+[source.upstream]
+url = "https://github.com/llvm/llvm-project/releases/download/llvmorg-23.1.1/llvm-project-23.1.1.src.tar.xz"
+sha256 = "ebe9be46fe8756d58c5b198ffad0fa2a766257add81a4dc52179bfacc7888ee6"
+
 [[source.binaries]]
 platform = "linux"
 arch = "x86_64"
@@ -43,8 +47,6 @@ sha256 = "64220f1c99132ef7e580447781b84f96fbba6862a43a8f6522b423052cd67502"
 
 [source.binaries.rebuild]
 libraries = ["libunwind"]
-source_url = "https://github.com/llvm/llvm-project/releases/download/llvmorg-23.1.1/llvm-project-23.1.1.src.tar.xz"
-source_sha256 = "ebe9be46fe8756d58c5b198ffad0fa2a766257add81a4dc52179bfacc7888ee6"
 
 [test]
 hello_world_source = """

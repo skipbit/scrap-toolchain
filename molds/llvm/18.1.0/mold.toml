@@ -20,6 +20,10 @@ glibc_exclude = ["bin/llvm-exegesis"]
 [source.platforms]
 supported = ["linux-aarch64"]
 
+[source.upstream]
+url = "https://github.com/llvm/llvm-project/releases/download/llvmorg-18.1.0/llvm-project-18.1.0.src.tar.xz"
+sha256 = "758a048046ac5024f86c868bb17c631500eed8f8d2677ae6a72ab7ad01602277"
+
 [[source.binaries]]
 platform = "linux"
 arch = "aarch64"
