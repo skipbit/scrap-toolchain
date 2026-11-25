@@ -135,9 +135,17 @@ compute_sha256() {
 }
 
 # Downloads <url>, verifies it against <sha256> and extracts it into <dest>
-# without the archive's top directory.
+# without the archive's top directory. Given <member> paths, relative to
+# that directory, GNU tar extracts only those; other tars extract all.
 fetch_source() {
-    local url="$1" sha="$2" dest="$3" file attempt actual
+    local url="$1" sha="$2" dest="$3" file attempt actual member
+    local -a only=()
+    if [[ $# -gt 3 && "$(tar --version)" == *"GNU tar"* ]]; then
+        only=(--wildcards --no-wildcards-match-slash)
+        for member in "${@:4}"; do
+            only+=("*/${member}")
+        done
+    fi
     file="${RUN_DIR}/$(basename "${url%%\?*}")"
     for attempt in $(seq 1 "$MAX_DL_RETRIES"); do
         curl -fsSL --max-time 600 -o "$file" "$url" && break
@@ -154,7 +162,7 @@ fetch_source() {
         return 2
     fi
     mkdir -p "$dest"
-    if ! tar -xf "$file" --strip-components=1 -C "$dest"; then
+    if ! tar -xf "$file" --strip-components=1 -C "$dest" ${only[@]+"${only[@]}"}; then
         fail "Cannot extract ${url}"
         return 2
     fi
@@ -650,17 +658,20 @@ if [[ "$SOURCE_TYPE" == "fetch" ]]; then
     echo ""
 
     # --- Step 7b: Rebuild libraries from source ---
-    # The license files are taken from the source as well, since the
-    # archive may have none at its top.
+    # The source is that of source.upstream. It is kept for step 8.
     echo -e "${BOLD}7b. Rebuild libraries from source${RESET}"
 
+    UPSTREAM=$(jq -c '.source.upstream // empty' "$MOLD_JSON")
+    UPSTREAM_SOURCE="${RUN_DIR}/upstream-source"
     REBUILD=$(echo "$BINARY_ENTRY" | jq -c '.rebuild // empty')
     if [[ -z "$REBUILD" ]]; then
         info "None declared"
+    elif [[ -z "$UPSTREAM" ]]; then
+        fail "Rebuilding libraries requires source.upstream"
+        exit 2
     else
-        REBUILD_SOURCE="${RUN_DIR}/rebuild-source"
-        fetch_source "$(jq -r '.source_url' <<< "$REBUILD")" \
-            "$(jq -r '.source_sha256' <<< "$REBUILD")" "$REBUILD_SOURCE" || exit $?
+        fetch_source "$(jq -r '.url' <<< "$UPSTREAM")" \
+            "$(jq -r '.sha256' <<< "$UPSTREAM")" "$UPSTREAM_SOURCE" || exit $?
         pass "Source verified and extracted"
         LIBRARIES=$(jq -r '.libraries[]' <<< "$REBUILD")
         while IFS= read -r library; do
@@ -669,7 +680,7 @@ if [[ "$SOURCE_TYPE" == "fetch" ]]; then
                 exit 2
             fi
             set +e
-            "${SCRIPT_DIR}/rebuild-libunwind.sh" "$STAGING_DIR" "$REBUILD_SOURCE"
+            "${SCRIPT_DIR}/rebuild-libunwind.sh" "$STAGING_DIR" "$UPSTREAM_SOURCE"
             RB_EXIT=$?
             set -e
             if [[ "$RB_EXIT" -ne 0 ]]; then
@@ -679,13 +690,12 @@ if [[ "$SOURCE_TYPE" == "fetch" ]]; then
             fi
             pass "Rebuilt ${library}"
         done <<< "$LIBRARIES"
-        copy_license_files ".metadata" "$REBUILD_SOURCE" "$STAGING_DIR" || exit $?
-        pass "License files copied from the source"
-        rm -rf "$REBUILD_SOURCE"
     fi
     echo ""
 
     # --- Step 8: License file inclusion ---
+    # A license file the archive has not at its top is taken from the
+    # source of source.upstream.
     echo -e "${BOLD}8. License file inclusion${RESET}"
 
     LICENSE_COUNT=$(jq '.metadata.license_files // [] | length' "$MOLD_JSON")
@@ -706,20 +716,29 @@ if [[ "$SOURCE_TYPE" == "fetch" ]]; then
 
         if [[ -f "${STAGING_DIR}/${LIC_FILE}" ]]; then
             pass "License file present: ${LIC_FILE}"
-        else
-            # Search in the staging directory tree
-            LIC_BASENAME=$(basename "$LIC_FILE")
-            FOUND_LIC=$(find "$STAGING_DIR" -name "$LIC_BASENAME" -type f 2>/dev/null | head -1)
-            if [[ -n "$FOUND_LIC" ]]; then
-                cp "$FOUND_LIC" "${STAGING_DIR}/${LIC_FILE}"
-                pass "License file found and copied to root: ${LIC_FILE}"
-            else
-                fail "License file not found: ${LIC_FILE}"
-                add_summary "- :x: Missing license file: ${LIC_FILE}"
-                exit 2
-            fi
+            continue
         fi
+        if [[ -z "$UPSTREAM" ]]; then
+            fail "License file not at the top of the archive, and no source.upstream: ${LIC_FILE}"
+            add_summary "- :x: Missing license file: ${LIC_FILE}"
+            exit 2
+        fi
+        if [[ ! -d "$UPSTREAM_SOURCE" ]]; then
+            mapfile -t LICENSE_FILES < <(jq -r '.metadata.license_files[]' "$MOLD_JSON")
+            fetch_source "$(jq -r '.url' <<< "$UPSTREAM")" \
+                "$(jq -r '.sha256' <<< "$UPSTREAM")" "$UPSTREAM_SOURCE" \
+                "${LICENSE_FILES[@]}" || exit $?
+        fi
+        if [[ ! -f "${UPSTREAM_SOURCE}/${LIC_FILE}" ]]; then
+            fail "License file not found in the archive or in source.upstream: ${LIC_FILE}"
+            add_summary "- :x: Missing license file: ${LIC_FILE}"
+            exit 2
+        fi
+        mkdir -p "$(dirname "${STAGING_DIR}/${LIC_FILE}")"
+        cp "${UPSTREAM_SOURCE}/${LIC_FILE}" "${STAGING_DIR}/${LIC_FILE}"
+        pass "License file copied from the upstream source: ${LIC_FILE}"
     done
+    rm -rf "$UPSTREAM_SOURCE"
 
     # Check for NOTICE files (Apache 2.0 Section 4(d) compliance)
     LICENSE_FILES_LIST=$(jq -r '.metadata.license_files // [] | .[]' "$MOLD_JSON")
@@ -1478,17 +1497,9 @@ elif [[ "$SOURCE_TYPE" == "build" ]]; then
             if [[ -f "${STAGING_DIR}/${LIC_FILE}" ]]; then
                 pass "License file present: ${LIC_FILE}"
             else
-                # Search in the staging directory tree
-                LIC_BASENAME=$(basename "$LIC_FILE")
-                FOUND_LIC=$(find "$STAGING_DIR" -name "$LIC_BASENAME" -type f 2>/dev/null | head -1)
-                if [[ -n "$FOUND_LIC" ]]; then
-                    cp "$FOUND_LIC" "${STAGING_DIR}/${LIC_FILE}"
-                    pass "License file found and copied to root: ${LIC_FILE}"
-                else
-                    fail "License file not found: ${LIC_FILE}"
-                    add_summary "- :x: Missing license file: ${LIC_FILE}"
-                    exit 2
-                fi
+                fail "License file not found: ${LIC_FILE}"
+                add_summary "- :x: Missing license file: ${LIC_FILE}"
+                exit 2
             fi
         done
         echo ""

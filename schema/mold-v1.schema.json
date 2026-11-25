@@ -124,8 +124,27 @@
           "description": "Files, by path relative to the ingot root (e.g., bin/llvm-exegesis), left out when measuring the glibc version the ingot requires. Each must be a file in the ingot; directories are not accepted."
         },
         "platforms": { "$ref": "#/$defs/platformSupport" },
+        "upstream": { "$ref": "#/$defs/upstream" },
         "build_fallback": { "$ref": "#/$defs/buildFallback" },
         "build": { "$ref": "#/$defs/buildDefinition" }
+      }
+    },
+    "upstream": {
+      "type": "object",
+      "required": ["url", "sha256"],
+      "additionalProperties": false,
+      "description": "Source archive of the release the binaries are built from. CI takes from it the license files a binary archive has not at its top, and the source of the libraries it rebuilds.",
+      "properties": {
+        "url": {
+          "type": "string",
+          "format": "uri",
+          "description": "Download URL for the source archive of the release"
+        },
+        "sha256": {
+          "type": "string",
+          "pattern": "^[a-f0-9]{64}$",
+          "description": "SHA-256 checksum of the source archive"
+        }
       }
     },
     "platformSupport": {
@@ -161,7 +180,14 @@
             "properties": {
               "binaries": { "minItems": 1 }
             },
-            "not": { "required": ["build"] }
+            "not": { "required": ["build"] },
+            "if": {
+              "properties": {
+                "binaries": { "contains": { "required": ["rebuild"] } }
+              },
+              "required": ["binaries"]
+            },
+            "then": { "required": ["upstream"] }
           }
         },
         "not": {
@@ -187,6 +213,7 @@
             "not": {
               "anyOf": [
                 { "required": ["binaries"] },
+                { "required": ["upstream"] },
                 { "required": ["build_fallback"] }
               ]
             }
@@ -251,9 +278,9 @@
     },
     "rebuild": {
       "type": "object",
-      "required": ["libraries", "source_url", "source_sha256"],
+      "required": ["libraries"],
       "additionalProperties": false,
-      "description": "Libraries of the archive to build again from source. CI publishes the result as an ingot instead of pointing to the archive.",
+      "description": "Libraries of the archive to build again from the source of source.upstream. CI publishes the result as an ingot instead of pointing to the archive.",
       "properties": {
         "libraries": {
           "type": "array",
@@ -261,16 +288,6 @@
           "uniqueItems": true,
           "items": { "type": "string", "enum": ["libunwind"] },
           "description": "Libraries to build again"
-        },
-        "source_url": {
-          "type": "string",
-          "format": "uri",
-          "description": "Download URL for the source archive of the release"
-        },
-        "source_sha256": {
-          "type": "string",
-          "pattern": "^[a-f0-9]{64}$",
-          "description": "SHA-256 checksum of the source archive"
         }
       }
     },

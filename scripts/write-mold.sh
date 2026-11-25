@@ -5,7 +5,7 @@
 #   Run from the repository root directory.
 #
 # Copies the base mold and changes only the version, the download URLs and
-# their checksums, the source URLs of rebuilt libraries included;
+# their checksums, the source archive of source.upstream included;
 # everything else is carried over for review. Binaries whose
 # file names are given as missing-file are left out.
 #
@@ -69,8 +69,7 @@ checksum() {
 }
 
 # The new URLs are the base URLs with the version replaced. Archives named
-# as missing are left out, and so is the source of a library rebuilt in
-# their binary.
+# as missing are left out.
 NEW_URLS=$(python3 - "${BASE_DIR}/mold.toml" "$BASE_VERSION" "$VERSION" ${MISSING[@]+"${MISSING[@]}"} <<'EOF'
 import sys, tomllib
 path, old, new, *missing = sys.argv[1:]
@@ -80,7 +79,8 @@ def is_kept(url):
     return url.replace(old, new).rsplit('/', 1)[1] not in missing
 binaries = [b for b in source.get('binaries', []) if is_kept(b['url'])]
 urls = [b['url'] for b in binaries]
-urls += [b['rebuild']['source_url'] for b in binaries if 'rebuild' in b]
+if 'upstream' in source and is_kept(source['upstream']['url']):
+    urls.append(source['upstream']['url'])
 if 'build' in source and is_kept(source['build']['source_url']):
     urls.append(source['build']['source_url'])
 for url in urls:
@@ -161,8 +161,8 @@ with open(dst, 'rb') as f:
     mold = tomllib.load(f)
 source = mold['source']
 pairs = [(b['url'], b['sha256']) for b in source.get('binaries', [])]
-pairs += [(b['rebuild']['source_url'], b['rebuild']['source_sha256'])
-          for b in source.get('binaries', []) if 'rebuild' in b]
+if 'upstream' in source:
+    pairs.append((source['upstream']['url'], source['upstream']['sha256']))
 if 'build' in source:
     pairs.append((source['build']['source_url'], source['build']['source_sha256']))
 if mold['metadata']['version'] != new:
