@@ -36,8 +36,6 @@ jobs:
       fetch_matrix: ${{ steps.detect.outputs.fetch_matrix }}
     steps:
       - uses: actions/checkout@v7
-        with:
-          fetch-depth: 0
 
       - name: Set up Python
         uses: actions/setup-python@v7
@@ -48,8 +46,6 @@ jobs:
         id: detect
         env:
           EVENT_NAME: ${{ github.event_name }}
-          BEFORE_SHA: ${{ github.event.before }}
-          CURRENT_SHA: ${{ github.sha }}
           MOLD_PATH_INPUT: ${{ inputs.mold_path }}
           GITHUB_TOKEN: ${{ github.token }}
         run: |
@@ -79,57 +75,20 @@ jobs:
             fi
             CHANGED_MOLDS=("$MOLD_PATH")
           else
-            # Push event: infrastructure changes come from git diff
-            # Guard against null SHA on initial push
-            NULL_SHA="0000000000000000000000000000000000000000"
-            if [[ "$BEFORE_SHA" == "$NULL_SHA" ]]; then
-              ALL_CHANGED_FILES=$(git ls-tree -r --name-only HEAD)
-            else
-              ALL_CHANGED_FILES=$(git diff --name-only "${BEFORE_SHA}..${CURRENT_SHA}" || true)
-            fi
-
-            # Check for infrastructure changes that affect all molds.
-            # Only the files that decide an ingot's content qualify:
-            # cast-ingot.sh is the build, remove-needed.sh rewrites files
-            # of Linux fetch ingots, rebuild-libunwind.sh rebuilds libunwind
-            # of macOS fetch ingots, and platforms.toml picks the container
-            # that sets the glibc baseline. The rest affect how
-            # builds run, not what is built — smoke-test.sh verifies the
-            # ingot after it is packed, validate-mold.sh and schema/ belong
-            # to pr-validation.yml, and generate-index.sh runs afterwards in
-            # index-update.yml. Rebuilding for those would republish a
-            # version from a different build for no gain; use
-            # workflow_dispatch to rebuild a mold on purpose.
-            INFRA_CHANGED=$(echo "$ALL_CHANGED_FILES" | grep -E '^(platforms\.toml|scripts/cast-ingot\.sh|scripts/remove-needed\.sh|scripts/rebuild-libunwind\.sh)$' || true)
-
+            # A mold is built when its OCI Index does not carry the hash
+            # scripts/mold-hash.py gives it now. The hash covers the scripts
+            # and platforms.toml that build every ingot, so a change to one
+            # of them builds every mold; a change to this workflow does not.
+            # This covers a changed mold and a mold that a cancelled or
+            # failed cast left behind; a metadata-only change keeps the
+            # hash. The step stops when the registry cannot be read, and
+            # the next cast compares again.
             CHANGED_MOLDS=()
-
-            # --- Infrastructure change: include ALL existing molds ---
-            # (fetch vs build filtering happens in Step 2 below)
-            if [[ -n "$INFRA_CHANGED" ]]; then
-              echo "Infrastructure change detected:"
-              echo "$INFRA_CHANGED" | while IFS= read -r f; do echo "  - $f"; done
-              echo "All existing molds will be evaluated for rebuild."
-
-              ALL_MOLD_DIRS=$(find molds -name "mold.toml" -not -path "*/\.*" 2>/dev/null \
-                | sed 's|/mold\.toml$||' | sort -u || true)
-              while IFS= read -r mold_dir; do
-                [[ -z "$mold_dir" ]] && continue
-                CHANGED_MOLDS+=("$mold_dir")
-              done <<< "$ALL_MOLD_DIRS"
-            else
-              # A mold is built when its OCI Index does not carry the hash
-              # scripts/mold-hash.py gives it now. This covers a changed
-              # mold and a mold that a cancelled or failed cast left
-              # behind; a metadata-only change keeps the hash. The step
-              # stops when the registry cannot be read, and the next cast
-              # compares again.
-              STALE_MOLDS=$(python3 scripts/stale-molds.py)
-              while IFS= read -r mold_dir; do
-                [[ -z "$mold_dir" ]] && continue
-                CHANGED_MOLDS+=("$mold_dir")
-              done <<< "$STALE_MOLDS"
-            fi
+            STALE_MOLDS=$(python3 scripts/stale-molds.py)
+            while IFS= read -r mold_dir; do
+              [[ -z "$mold_dir" ]] && continue
+              CHANGED_MOLDS+=("$mold_dir")
+            done <<< "$STALE_MOLDS"
           fi
 
           if [[ ${#CHANGED_MOLDS[@]} -eq 0 ]]; then
