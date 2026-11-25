@@ -10,18 +10,15 @@ Checks:
   - an active toolchain has an ingot for every environment it supports,
     and so has a disabled toolchain unless it has no ingots at all
 
-An environment is "<platform>-<arch>". A toolchain supports the
-environments in source.platforms.supported. Without that list, a fetch
-toolchain supports the environments of its source.binaries and a build
-toolchain supports every Tier 1 environment. Only Tier 1 environments
-are cast, so a build toolchain, or a fetch binary with remove_needed or
-rebuild, outside Tier 1 has no ingot.
+The environments a toolchain supports are given by
+scripts/mold-environments.py.
 
 Exit codes:
   0 = The index matches the molds
   1 = The index breaks at least one check; each problem is printed
 """
 
+import importlib.util
 import sys
 import tomllib
 from pathlib import Path
@@ -29,8 +26,15 @@ from pathlib import Path
 STATUSES = {"active", "deprecated", "disabled"}
 
 
-def environment(entry):
-    return f"{entry['platform']}-{entry['arch']}"
+def load_script(name):
+    path = Path(__file__).with_name(name)
+    spec = importlib.util.spec_from_file_location(path.stem.replace("-", "_"), path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+environments = load_script("mold-environments.py")
 
 
 def load_molds(errors):
@@ -50,19 +54,6 @@ def load_molds(errors):
     return molds
 
 
-def supported_environments(mold, tier1):
-    source = mold["source"]
-    declared = set(source.get("platforms", {}).get("supported", []))
-    if source["type"] == "fetch":
-        binaries = source.get("binaries", [])
-        uncast = {
-            environment(b) for b in binaries
-            if b.get("remove_needed") or b.get("rebuild")
-        } - tier1
-        return (declared or {environment(b) for b in binaries}) - uncast
-    return (declared or tier1) & tier1
-
-
 def check_toolchain(name, toolchain, mold, tier1, errors):
     status = toolchain.get("status")
     if status not in STATUSES:
@@ -75,9 +66,9 @@ def check_toolchain(name, toolchain, mold, tier1, errors):
         errors.append(f"{name}: has no mold")
         return
 
-    ingots = {environment(i) for i in toolchain.get("ingots", [])}
+    ingots = {environments.environment(i) for i in toolchain.get("ingots", [])}
     if status == "active" or (status == "disabled" and ingots):
-        for missing in sorted(supported_environments(mold, tier1) - ingots):
+        for missing in sorted(environments.supported_environments(mold, tier1) - ingots):
             errors.append(f"{name}: has no ingot for {missing}")
 
 
@@ -85,8 +76,7 @@ def main():
     errors = []
     with open("index.toml", "rb") as f:
         index = tomllib.load(f)
-    with open("platforms.toml", "rb") as f:
-        tier1 = {environment(p) for p in tomllib.load(f)["platforms"]["tier1"]}
+    tier1 = environments.tier1_environments()
     molds = load_molds(errors)
 
     listed = set()

@@ -119,15 +119,7 @@ jobs:
             echo "Detected: ${mold} (${SOURCE_TYPE})"
 
             if [[ "$SOURCE_TYPE" == "fetch" ]]; then
-              CAST_IDS=$(MOLD_VAR="$mold" python3 -c "
-          import tomllib, os
-          mold = os.environ['MOLD_VAR']
-          with open(f'{mold}/mold.toml', 'rb') as f:
-              data = tomllib.load(f)
-          for b in data['source']['binaries']:
-              if b.get('remove_needed') or b.get('rebuild'):
-                  print(f\"{b['platform']}-{b['arch']}\")
-          ")
+              CAST_IDS=$(python3 scripts/mold-environments.py "$mold")
               if [[ -z "$CAST_IDS" ]]; then
                 echo "::notice::Fetch type: ${mold} — validated in pr-validation.yml only"
                 continue
@@ -142,12 +134,10 @@ jobs:
           done
 
           # === Step 3: Generate matrices ===
-          # Cross each mold with its Tier 1 platforms from platforms.toml.
-          # A build-type mold keeps the platforms in source.platforms.supported
-          # when it is specified; a fetch-type mold keeps the platforms that
-          # remove DT_NEEDED entries or rebuild libraries. The build matrix
-          # is consumed by the cast-build-configure/make/package jobs, the
-          # fetch matrix by cast-fetch.
+          # Cross each mold with the platforms scripts/mold-environments.py
+          # gives it. The build matrix is consumed by the
+          # cast-build-configure/make/package jobs, the fetch matrix by
+          # cast-fetch.
 
           TIER1_PLATFORMS=$(python3 -c "
           import tomllib, json
@@ -167,7 +157,7 @@ jobs:
 
           # Appends to the array named by the third argument one matrix entry
           # per Tier 1 platform of a mold, limited to the platform IDs given
-          # (one per line, e.g. linux-x86_64) when there are any.
+          # (one per line, e.g. linux-x86_64).
           add_matrix_entries() {
             local mold="$1" only="$2"
             local -n entries="$3"
@@ -197,7 +187,7 @@ jobs:
               ARCH=$(echo "$platform_entry" | jq -r '.arch')
 
               PLATFORM_ID="${PLAT}-${ARCH}"
-              if [[ -n "$only" ]] && ! echo "$only" | grep -qx "$PLATFORM_ID"; then
+              if ! echo "$only" | grep -qx "$PLATFORM_ID"; then
                 echo "  Skip: ${mold} ${PLATFORM_ID}"
                 continue
               fi
@@ -249,15 +239,8 @@ jobs:
 
           BUILD_ENTRIES=()
           for mold in "${BUILD_MOLD_DIRS[@]}"; do
-            SUPPORTED_PLATFORMS=$(MOLD_VAR="$mold" python3 -c "
-          import tomllib, os
-          mold = os.environ['MOLD_VAR']
-          with open(f'{mold}/mold.toml', 'rb') as f:
-              data = tomllib.load(f)
-          for p in data.get('source', {}).get('platforms', {}).get('supported', []):
-              print(p)
-          ")
-            add_matrix_entries "$mold" "$SUPPORTED_PLATFORMS" BUILD_ENTRIES
+            CAST_IDS=$(python3 scripts/mold-environments.py "$mold")
+            add_matrix_entries "$mold" "$CAST_IDS" BUILD_ENTRIES
           done
 
           FETCH_ENTRIES=()
@@ -796,31 +779,11 @@ jobs:
               continue
             fi
 
-            # Determine expected platform count: intersect the platforms the
-            # mold casts with Tier 1 platforms. A fetch-type mold casts those
-            # whose binary entry removes DT_NEEDED entries or rebuilds
-            # libraries; a build-type mold those in
-            # source.platforms.supported, or all when it is omitted.
+            # Determine expected platform count from the platforms the mold
+            # casts.
             MOLD_DIR="molds/${key}"
-            EXPECTED_COUNT=$(MOLD_VAR="$MOLD_DIR" python3 -c "
-          import tomllib, os
-          mold = os.environ['MOLD_VAR']
-          with open(f'{mold}/mold.toml', 'rb') as f:
-              mold_data = tomllib.load(f)
-          with open('platforms.toml', 'rb') as f:
-              plat_data = tomllib.load(f)
-          tier1_ids = {f\"{p['platform']}-{p['arch']}\" for p in plat_data['platforms']['tier1']}
-          source = mold_data.get('source', {})
-          supported = source.get('platforms', {}).get('supported', [])
-          if source.get('type') == 'fetch':
-              cast_ids = {f\"{b['platform']}-{b['arch']}\" for b in source.get('binaries', []) if b.get('remove_needed') or b.get('rebuild')}
-              count = len(cast_ids & tier1_ids)
-          elif supported:
-              count = len(set(supported) & tier1_ids)
-          else:
-              count = len(tier1_ids)
-          print(count)
-          ")
+            CAST_IDS=$(python3 scripts/mold-environments.py "$MOLD_DIR")
+            EXPECTED_COUNT=$(grep -c . <<< "$CAST_IDS" || true)
 
             echo ""
             echo "=== Processing: ${key} (${PLATFORM_COUNT}/${EXPECTED_COUNT} platforms) ==="
