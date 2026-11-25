@@ -62,10 +62,10 @@ jobs:
 
           # generate-index.sh builds the index from the molds and keeps what
           # it cannot resolve from the current index.toml. It runs mold-hash.py
-          # to pair the molds with their ingots, and its hash covers the
-          # BUILD_FILES listed in mold-hash.py.
+          # to pair the molds with their ingots, and that hash covers the
+          # scripts and platforms.toml listed there.
           INDEX_INPUTS=$(echo "$CHANGED_FILES" \
-            | grep -E '^(molds/|index\.toml$|platforms\.toml$|scripts/(generate-index\.sh|check-scrap-reads-index\.sh|mold-hash\.py|cast-ingot\.sh|measure-glibc\.sh|remove-needed\.sh|rebuild-libunwind\.sh)$|\.github/workflows/pr-validation\.yml$)' || true)
+            | grep -E '^(molds/|scripts/|index\.toml$|platforms\.toml$|\.github/workflows/pr-validation\.yml$)' || true)
           if [[ -n "$INDEX_INPUTS" ]]; then
             echo "index_affected=true" >> "$GITHUB_OUTPUT"
           else
