@@ -76,12 +76,13 @@ jobs:
             CHANGED_MOLDS=("$MOLD_PATH")
           else
             # A mold is built when its OCI Index does not carry the hash
-            # scripts/mold-hash.py gives it now. The hash covers the files
-            # that decide how every ingot is built, so a change to one of
-            # them builds every mold. This covers a changed mold and a mold
-            # that a cancelled or failed cast left behind; a metadata-only
-            # change keeps the hash. The step stops when the registry
-            # cannot be read, and the next cast compares again.
+            # scripts/mold-hash.py gives it now. The hash covers the scripts
+            # and platforms.toml that build every ingot, so a change to one
+            # of them builds every mold; a change to this workflow does not.
+            # This covers a changed mold and a mold that a cancelled or
+            # failed cast left behind; a metadata-only change keeps the
+            # hash. The step stops when the registry cannot be read, and
+            # the next cast compares again.
             CHANGED_MOLDS=()
             STALE_MOLDS=$(python3 scripts/stale-molds.py)
             while IFS= read -r mold_dir; do
