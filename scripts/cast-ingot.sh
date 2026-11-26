@@ -702,7 +702,13 @@ if [[ "$SOURCE_TYPE" == "fetch" ]]; then
     # source of source.upstream.
     echo -e "${BOLD}8. License file inclusion${RESET}"
 
-    mapfile -t LICENSE_FILES < <(jq -r '.metadata.license_files // [] | .[]' "$MOLD_JSON")
+    LICENSE_LINES=$(jq -r '.metadata.license_files // [] | .[]' "$MOLD_JSON")
+    LICENSE_FILES=()
+    while IFS= read -r LIC_FILE; do
+        if [[ -n "$LIC_FILE" ]]; then
+            LICENSE_FILES+=("$LIC_FILE")
+        fi
+    done <<< "$LICENSE_LINES"
 
     if [[ ${#LICENSE_FILES[@]} -eq 0 ]]; then
         fail "No license_files defined in metadata"
