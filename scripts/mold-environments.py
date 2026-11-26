@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Print the environments Ingot Cast builds ingots of for a mold.
 
-Usage: mold-environments.py <mold directory>
+Usage: mold-environments.py [--all] <mold directory>
 
 An environment is "<platform>-<arch>". Only Tier 1 environments in
 platforms.toml are cast. A fetch mold casts the environments of its
@@ -14,7 +14,8 @@ that list, a fetch mold supports the environments of its binaries and a
 build mold every Tier 1 environment. A binary that would be cast outside
 Tier 1 is not supported, since it has no ingot.
 
-Prints one environment per line, in the order of platforms.toml.
+Prints one environment per line, in the order of platforms.toml. With
+--all, prints the environments the mold asks to cast, Tier 1 or not.
 """
 
 import sys
@@ -37,12 +38,15 @@ def is_cast(binary):
     return bool(binary.get("remove_needed") or binary.get("rebuild"))
 
 
-def cast_environments(mold, tier1):
+def wanted_environments(mold, tier1):
     source = mold["source"]
     if source["type"] == "fetch":
-        wanted = {environment(b) for b in source.get("binaries", []) if is_cast(b)}
-    else:
-        wanted = set(source.get("platforms", {}).get("supported", [])) or set(tier1)
+        return [environment(b) for b in source.get("binaries", []) if is_cast(b)]
+    return source.get("platforms", {}).get("supported", []) or list(tier1)
+
+
+def cast_environments(mold, tier1):
+    wanted = set(wanted_environments(mold, tier1))
     return [e for e in tier1 if e in wanted]
 
 
@@ -57,9 +61,14 @@ def supported_environments(mold, tier1):
 
 
 if __name__ == "__main__":
-    if len(sys.argv) != 2:
+    args = sys.argv[1:]
+    show_all = args[:1] == ["--all"]
+    if show_all:
+        args = args[1:]
+    if len(args) != 1:
         sys.exit(__doc__)
-    with (Path(sys.argv[1]) / "mold.toml").open("rb") as f:
+    with (Path(args[0]) / "mold.toml").open("rb") as f:
         mold = tomllib.load(f)
-    for env in cast_environments(mold, tier1_environments()):
+    pick = wanted_environments if show_all else cast_environments
+    for env in pick(mold, tier1_environments()):
         print(env)
