@@ -143,6 +143,10 @@ fetch_source() {
     if [[ $# -gt 3 && "$(tar --version)" == *"GNU tar"* ]]; then
         only=(--wildcards --no-wildcards-match-slash)
         for member in "${@:4}"; do
+            member=${member//\\/\\\\}
+            member=${member//\*/\\*}
+            member=${member//\?/\\?}
+            member=${member//\[/\\[}
             only+=("*/${member}")
         done
     fi
@@ -698,46 +702,48 @@ if [[ "$SOURCE_TYPE" == "fetch" ]]; then
     # source of source.upstream.
     echo -e "${BOLD}8. License file inclusion${RESET}"
 
-    LICENSE_COUNT=$(jq '.metadata.license_files // [] | length' "$MOLD_JSON")
+    mapfile -t LICENSE_FILES < <(jq -r '.metadata.license_files // [] | .[]' "$MOLD_JSON")
 
-    if [[ "$LICENSE_COUNT" -eq 0 ]]; then
+    if [[ ${#LICENSE_FILES[@]} -eq 0 ]]; then
         fail "No license_files defined in metadata"
         exit 2
     fi
 
-    for idx in $(seq 0 $((LICENSE_COUNT - 1))); do
-        LIC_FILE=$(jq -r ".metadata.license_files[$idx]" "$MOLD_JSON")
-
-        # Reject path traversal in license file names
+    MISSING_LICENSE_FILES=()
+    for LIC_FILE in "${LICENSE_FILES[@]}"; do
         if is_unsafe_path "$LIC_FILE"; then
             fail "License file path contains traversal or is absolute: ${LIC_FILE}"
             exit 2
         fi
-
         if [[ -f "${STAGING_DIR}/${LIC_FILE}" ]]; then
             pass "License file present: ${LIC_FILE}"
-            continue
+        else
+            MISSING_LICENSE_FILES+=("$LIC_FILE")
         fi
+    done
+
+    if [[ ${#MISSING_LICENSE_FILES[@]} -gt 0 ]]; then
         if [[ -z "$UPSTREAM" ]]; then
-            fail "License file not at the top of the archive, and no source.upstream: ${LIC_FILE}"
-            add_summary "- :x: Missing license file: ${LIC_FILE}"
+            fail "License files not at the top of the archive, and no source.upstream: ${MISSING_LICENSE_FILES[*]}"
+            add_summary "- :x: Missing license files: ${MISSING_LICENSE_FILES[*]}"
             exit 2
         fi
         if [[ ! -d "$UPSTREAM_SOURCE" ]]; then
-            mapfile -t LICENSE_FILES < <(jq -r '.metadata.license_files[]' "$MOLD_JSON")
             fetch_source "$(jq -r '.url' <<< "$UPSTREAM")" \
                 "$(jq -r '.sha256' <<< "$UPSTREAM")" "$UPSTREAM_SOURCE" \
-                "${LICENSE_FILES[@]}" || exit $?
+                "${MISSING_LICENSE_FILES[@]}" || exit $?
         fi
-        if [[ ! -f "${UPSTREAM_SOURCE}/${LIC_FILE}" ]]; then
-            fail "License file not found in the archive or in source.upstream: ${LIC_FILE}"
-            add_summary "- :x: Missing license file: ${LIC_FILE}"
-            exit 2
-        fi
-        mkdir -p "$(dirname "${STAGING_DIR}/${LIC_FILE}")"
-        cp "${UPSTREAM_SOURCE}/${LIC_FILE}" "${STAGING_DIR}/${LIC_FILE}"
-        pass "License file copied from the upstream source: ${LIC_FILE}"
-    done
+        for LIC_FILE in "${MISSING_LICENSE_FILES[@]}"; do
+            if [[ ! -f "${UPSTREAM_SOURCE}/${LIC_FILE}" ]]; then
+                fail "License file not found in the archive or in source.upstream: ${LIC_FILE}"
+                add_summary "- :x: Missing license file: ${LIC_FILE}"
+                exit 2
+            fi
+            mkdir -p "$(dirname "${STAGING_DIR}/${LIC_FILE}")"
+            cp "${UPSTREAM_SOURCE}/${LIC_FILE}" "${STAGING_DIR}/${LIC_FILE}"
+            pass "License file copied from the upstream source: ${LIC_FILE}"
+        done
+    fi
     rm -rf "$UPSTREAM_SOURCE"
 
     # Check for NOTICE files (Apache 2.0 Section 4(d) compliance)
