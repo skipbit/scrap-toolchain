@@ -474,8 +474,12 @@ json.dump(data, sys.stdout)
 
     info "Processing: ${family} ${version} (${source_type}, ${status})"
 
-    cast_envs=$(python3 scripts/mold-environments.py --all "$(dirname "$mold_path")" \
-        | jq -Rnc '[inputs | select(length > 0)]')
+    if ! cast_envs=$(python3 scripts/mold-environments.py --all "$(dirname "$mold_path")" \
+        | jq -Rnc '[inputs | select(length > 0)]'); then
+        warn "Failed to read the cast environments of ${mold_path}; skipping"
+        MOLD_ERRORS=$((MOLD_ERRORS + 1))
+        continue
+    fi
 
     # Registry ingots built from another version of this mold would be
     # listed with the values of this one, and so would the current ingots
