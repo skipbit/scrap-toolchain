@@ -7,7 +7,8 @@
 # Copies the base mold and changes only the version, the download URLs and
 # their checksums, the source archive of source.upstream included;
 # everything else is carried over for review. Binaries whose
-# file names are given as missing-file are left out.
+# file names are given as missing-file are left out. The source archive of
+# source.upstream cannot be missing.
 #
 # Checksums of GitHub release assets come from the digest GitHub records for
 # them. Anything else is downloaded and hashed.
@@ -79,7 +80,9 @@ def is_kept(url):
     return url.replace(old, new).rsplit('/', 1)[1] not in missing
 binaries = [b for b in source.get('binaries', []) if is_kept(b['url'])]
 urls = [b['url'] for b in binaries]
-if 'upstream' in source and is_kept(source['upstream']['url']):
+if 'upstream' in source:
+    if not is_kept(source['upstream']['url']):
+        sys.exit('the source archive of source.upstream cannot be missing')
     urls.append(source['upstream']['url'])
 if 'build' in source and is_kept(source['build']['source_url']):
     urls.append(source['build']['source_url'])
