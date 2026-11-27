@@ -10,7 +10,8 @@
 # Upstream uploads release files some hours after tagging, and occasionally
 # never uploads one of them. A release with files missing is left for a
 # later run until it is GRACE_DAYS old, and listed with what it has after
-# that. A release with none of its files is never listed.
+# that. A release with none of its files, or without the source archive of
+# source.upstream, is never listed.
 #
 # Output: JSON array on stdout, one object per release:
 #   {"id": "llvm-23.1.0", "family": "llvm", "version": "23.1.0",
@@ -57,6 +58,29 @@ if 'build' in source:
 for url in urls:
     print(url.rsplit('/', 1)[1].replace(old, new))
 EOF
+}
+
+# Prints the file name of the source archive of source.upstream, with its
+# version replaced, or nothing when the base mold has none.
+# Args: $1 = base mold dir, $2 = base version, $3 = new version
+upstream_file() {
+    python3 - "$1/mold.toml" "$2" "$3" <<'EOF'
+import sys, tomllib
+path, old, new = sys.argv[1:]
+with open(path, 'rb') as f:
+    source = tomllib.load(f)['source']
+if 'upstream' in source:
+    print(source['upstream']['url'].rsplit('/', 1)[1].replace(old, new))
+EOF
+}
+
+# Args: $1 = family, $2 = version, $3 = file name, $4 = release assets
+# Succeeds when the release has the file.
+is_published() {
+    case "$1" in
+        llvm) [[ " $4 " == *" $3 "* ]] ;;
+        gcc)  gcc_file_published "$2" "$3" ;;
+    esac
 }
 
 # Args: none
@@ -132,13 +156,15 @@ for family_dir in "$MOLDS_DIR"/*/; do
     while IFS=$'\t' read -r version published assets; do
         [[ "$version" =~ $STABLE_RE ]] || continue
         version_gt "$version" "$newest" || continue
+        source_file=$(upstream_file "$base" "$newest" "$version")
+        if [[ -n "$source_file" ]] && ! is_published "$family" "$version" "$source_file" "$assets"; then
+            log "${family}: ${version} is missing the source ${source_file}; skipped"
+            continue
+        fi
         files=$(expected_files "$base" "$newest" "$version")
         missing=()
         while read -r file; do
-            case "$family" in
-                llvm) [[ " $assets " == *" $file "* ]] ;;
-                gcc)  gcc_file_published "$version" "$file" ;;
-            esac || missing+=("$file")
+            is_published "$family" "$version" "$file" "$assets" || missing+=("$file")
         done <<< "$files"
         if [[ ${#missing[@]} -gt 0 ]]; then
             if [[ ${#missing[@]} -eq $(wc -l <<< "$files") ]] || ! past_grace "$published"; then

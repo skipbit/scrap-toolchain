@@ -29,12 +29,14 @@ from pathlib import Path
 # cast-ingot.sh is the build, remove-needed.sh rewrites files of Linux
 # fetch ingots, rebuild-libunwind.sh rebuilds libunwind of macOS fetch
 # ingots, measure-glibc.sh gives the glibc version published with an
-# ingot, and platforms.toml picks the container that sets the glibc
-# baseline. The other scripts check or publish an ingot, and do not
-# change what is built.
+# ingot, lib/paths.sh holds rules the scripts above share, and
+# platforms.toml picks the container that sets the glibc baseline. The
+# other scripts check or publish an ingot, and do not change what is
+# built.
 BUILD_FILES = (
     "platforms.toml",
     "scripts/cast-ingot.sh",
+    "scripts/lib/paths.sh",
     "scripts/measure-glibc.sh",
     "scripts/remove-needed.sh",
     "scripts/rebuild-libunwind.sh",

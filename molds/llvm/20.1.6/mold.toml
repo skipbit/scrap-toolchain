@@ -17,6 +17,10 @@ type = "fetch"
 glibc_min = "2.34"
 glibc_exclude = ["bin/llvm-exegesis", "bin/bbc", "bin/flang-20"]
 
+[source.upstream]
+url = "https://github.com/llvm/llvm-project/releases/download/llvmorg-20.1.6/llvm-project-20.1.6.src.tar.xz"
+sha256 = "5c70549d524284c184fe9fbff862c3d2d7a61b787570611b5a30e5cc345f145e"
+
 [[source.binaries]]
 platform = "linux"
 arch = "x86_64"

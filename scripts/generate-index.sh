@@ -26,8 +26,9 @@ MAX_API_RETRIES=3
 MOLDS_DIR="molds"
 INDEX_FILE="index.toml"
 
-# Binary entries that remove DT_NEEDED entries or rebuild libraries are cast.
-JQ_IS_CAST='def is_cast: .remove_needed or .rebuild;'
+# A binary entry is cast when its environment is in <envs>, the list
+# scripts/mold-environments.py --all prints.
+JQ_IS_CAST='def is_cast(envs): "\(.platform)-\(.arch)" | IN(envs[]);'
 
 # --- Colors (disabled if not a terminal) ---
 if [[ -t 1 ]]; then
@@ -304,15 +305,16 @@ collect_build_ingots() {
 # Reads source.binaries[] directly from the parsed mold JSON, leaving out
 # the entries that are cast (see collect_cast_fetch_ingots).
 # No CI artifacts or API calls needed — mold.toml is the single source of truth.
-# Args: $1 = mold JSON (parsed mold.toml as JSON string)
+# Args: $1 = mold JSON (parsed mold.toml as JSON string),
+#       $2 = cast environments (JSON array)
 # Output: JSON array of ingot objects on stdout
 collect_fetch_ingots() {
-    local mold_json="$1"
+    local mold_json="$1" cast_envs="$2"
     local glibc_min
     glibc_min=$(jq -r '.source.glibc_min // empty' <<< "$mold_json")
 
-    jq --arg glibc_min "$glibc_min" "${JQ_IS_CAST}"'
-        [.source.binaries[] | select(is_cast | not) | {
+    jq --arg glibc_min "$glibc_min" --argjson cast "$cast_envs" "${JQ_IS_CAST}"'
+        [.source.binaries[] | select(is_cast($cast) | not) | {
             platform,
             arch,
             url,
@@ -327,12 +329,14 @@ collect_fetch_ingots() {
 # archive is never listed in their place. A platform missing from the
 # registry keeps the registry entry of the current index, or is left out.
 # Args: $1 = mold JSON, $2 = family, $3 = version,
-#       $4 = registry ingots (JSON array, from collect_build_ingots)
+#       $4 = registry ingots (JSON array, from collect_build_ingots),
+#       $5 = cast environments (JSON array)
 # Output: JSON array of ingot objects on stdout
 collect_cast_fetch_ingots() {
-    local mold_json="$1" family="$2" version="$3" registry_ingots="$4"
+    local mold_json="$1" family="$2" version="$3" registry_ingots="$4" cast_envs="$5"
     local cast_ids
-    cast_ids=$(jq -c "${JQ_IS_CAST} [.source.binaries[] | select(is_cast) | {platform, arch}]" <<< "$mold_json")
+    cast_ids=$(jq -c --argjson cast "$cast_envs" \
+        "${JQ_IS_CAST}"' [.source.binaries[] | select(is_cast($cast)) | {platform, arch}]' <<< "$mold_json")
     if [[ "$cast_ids" == "[]" ]]; then
         echo "[]"
         return
@@ -470,15 +474,20 @@ json.dump(data, sys.stdout)
 
     info "Processing: ${family} ${version} (${source_type}, ${status})"
 
+    if ! cast_envs=$(python3 scripts/mold-environments.py --all "$(dirname "$mold_path")" \
+        | jq -Rnc '[inputs | select(length > 0)]'); then
+        warn "Failed to read the cast environments of ${mold_path}; skipping"
+        MOLD_ERRORS=$((MOLD_ERRORS + 1))
+        continue
+    fi
+
     # Registry ingots built from another version of this mold would be
     # listed with the values of this one, and so would the current ingots
     # when the registry cannot be read. In both cases keep the entry the
     # index has. Only the status is taken from the mold: it says whether to
     # offer the version, not what was built.
     registry_ingots="[]"
-    if [[ "$source_type" == "build" ]] \
-        || jq -e "${JQ_IS_CAST} [.source.binaries[]? | select(is_cast)] | length > 0" \
-            <<< "$mold_json" >/dev/null; then
+    if [[ "$source_type" == "build" || "$cast_envs" != "[]" ]]; then
         registry_read=$(collect_build_ingots "$family" "$version")
         registry_ingots=$(jq -c '.ingots' <<< "$registry_read")
         recorded_hash=$(jq -r '.mold_hash' <<< "$registry_read")
@@ -516,8 +525,9 @@ json.dump(data, sys.stdout)
     if [[ "$source_type" == "fetch" ]]; then
         # Fetch type: upstream URLs from mold.toml, and OCI references for
         # the binaries that remove DT_NEEDED entries or rebuild libraries
-        upstream_ingots=$(collect_fetch_ingots "$mold_json")
-        cast_ingots=$(collect_cast_fetch_ingots "$mold_json" "$family" "$version" "$registry_ingots")
+        upstream_ingots=$(collect_fetch_ingots "$mold_json" "$cast_envs")
+        cast_ingots=$(collect_cast_fetch_ingots "$mold_json" "$family" "$version" \
+            "$registry_ingots" "$cast_envs")
         if ! ingots=$(jq -n --argjson upstream "$upstream_ingots" --argjson cast "$cast_ingots" \
             '($upstream | map(. + {origin: "upstream"})) + ($cast | map(. + {origin: "scrap-release"}))'); then
             warn "Failed to collect the ingots of ${mold_path}; skipping"

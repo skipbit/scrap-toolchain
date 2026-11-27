@@ -48,6 +48,8 @@ STAGE_ARTIFACT_DIR="${STAGE_ARTIFACT_DIR:-}"
 CAST_FETCH_INGOT="${CAST_FETCH_INGOT:-1}"
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=scripts/lib/paths.sh
+source "${SCRIPT_DIR}/lib/paths.sh"
 MAX_DL_RETRIES=3
 GLIBC_BASELINE=$(python3 -c "
 try:
@@ -133,9 +135,21 @@ compute_sha256() {
 }
 
 # Downloads <url>, verifies it against <sha256> and extracts it into <dest>
-# without the archive's top directory.
+# without the archive's top directory. Given <member> paths, relative to
+# that directory, GNU tar extracts only those; other tars extract all.
 fetch_source() {
-    local url="$1" sha="$2" dest="$3" file attempt actual
+    local url="$1" sha="$2" dest="$3" file attempt actual member
+    local -a only=()
+    if [[ $# -gt 3 && "$(tar --version)" == *"GNU tar"* ]]; then
+        only=(--wildcards --no-wildcards-match-slash)
+        for member in "${@:4}"; do
+            member=${member//\\/\\\\}
+            member=${member//\*/\\*}
+            member=${member//\?/\\?}
+            member=${member//\[/\\[}
+            only+=("*/${member}")
+        done
+    fi
     file="${RUN_DIR}/$(basename "${url%%\?*}")"
     for attempt in $(seq 1 "$MAX_DL_RETRIES"); do
         curl -fsSL --max-time 600 -o "$file" "$url" && break
@@ -152,7 +166,7 @@ fetch_source() {
         return 2
     fi
     mkdir -p "$dest"
-    if ! tar -xf "$file" --strip-components=1 -C "$dest"; then
+    if ! tar -xf "$file" --strip-components=1 -C "$dest" ${only[@]+"${only[@]}"}; then
         fail "Cannot extract ${url}"
         return 2
     fi
@@ -165,8 +179,7 @@ copy_license_files() {
     local entry="$1" source="$2" dest="$3" lic
     while IFS= read -r lic; do
         [[ -n "$lic" ]] || continue
-        if [[ "$lic" == /* || "$lic" == ../* || "$lic" == */../* || \
-              "$lic" == */.. || "$lic" == .. ]]; then
+        if is_unsafe_path "$lic"; then
             fail "License file path contains traversal or is absolute: ${lic}"
             return 2
         fi
@@ -579,9 +592,7 @@ if [[ "$SOURCE_TYPE" == "fetch" ]]; then
     CONTENT_DIR="$EXTRACT_DIR"
     if [[ -n "$ROOT_DIR" ]]; then
         # Reject path traversal in root_dir
-        if [[ "$ROOT_DIR" == /* || "$ROOT_DIR" == ../* || \
-              "$ROOT_DIR" == */../* || "$ROOT_DIR" == */.. || \
-              "$ROOT_DIR" == .. ]]; then
+        if is_unsafe_path "$ROOT_DIR"; then
             fail "root_dir contains traversal or is absolute: ${ROOT_DIR}"
             exit 2
         fi
@@ -651,17 +662,20 @@ if [[ "$SOURCE_TYPE" == "fetch" ]]; then
     echo ""
 
     # --- Step 7b: Rebuild libraries from source ---
-    # The license files are taken from the source as well, since the
-    # archive may have none at its top.
+    # The source is that of source.upstream. It is kept for step 8.
     echo -e "${BOLD}7b. Rebuild libraries from source${RESET}"
 
+    UPSTREAM=$(jq -c '.source.upstream // empty' "$MOLD_JSON")
+    UPSTREAM_SOURCE="${RUN_DIR}/upstream-source"
     REBUILD=$(echo "$BINARY_ENTRY" | jq -c '.rebuild // empty')
     if [[ -z "$REBUILD" ]]; then
         info "None declared"
+    elif [[ -z "$UPSTREAM" ]]; then
+        fail "Rebuilding libraries requires source.upstream"
+        exit 2
     else
-        REBUILD_SOURCE="${RUN_DIR}/rebuild-source"
-        fetch_source "$(jq -r '.source_url' <<< "$REBUILD")" \
-            "$(jq -r '.source_sha256' <<< "$REBUILD")" "$REBUILD_SOURCE" || exit $?
+        fetch_source "$(jq -r '.url' <<< "$UPSTREAM")" \
+            "$(jq -r '.sha256' <<< "$UPSTREAM")" "$UPSTREAM_SOURCE" || exit $?
         pass "Source verified and extracted"
         LIBRARIES=$(jq -r '.libraries[]' <<< "$REBUILD")
         while IFS= read -r library; do
@@ -670,7 +684,7 @@ if [[ "$SOURCE_TYPE" == "fetch" ]]; then
                 exit 2
             fi
             set +e
-            "${SCRIPT_DIR}/rebuild-libunwind.sh" "$STAGING_DIR" "$REBUILD_SOURCE"
+            "${SCRIPT_DIR}/rebuild-libunwind.sh" "$STAGING_DIR" "$UPSTREAM_SOURCE"
             RB_EXIT=$?
             set -e
             if [[ "$RB_EXIT" -ne 0 ]]; then
@@ -680,49 +694,63 @@ if [[ "$SOURCE_TYPE" == "fetch" ]]; then
             fi
             pass "Rebuilt ${library}"
         done <<< "$LIBRARIES"
-        copy_license_files ".metadata" "$REBUILD_SOURCE" "$STAGING_DIR" || exit $?
-        pass "License files copied from the source"
-        rm -rf "$REBUILD_SOURCE"
     fi
     echo ""
 
     # --- Step 8: License file inclusion ---
+    # A license file the archive has not at its top is taken from the
+    # source of source.upstream.
     echo -e "${BOLD}8. License file inclusion${RESET}"
 
-    LICENSE_COUNT=$(jq '.metadata.license_files // [] | length' "$MOLD_JSON")
+    LICENSE_LINES=$(jq -r '.metadata.license_files // [] | .[]' "$MOLD_JSON")
+    LICENSE_FILES=()
+    while IFS= read -r LIC_FILE; do
+        if [[ -n "$LIC_FILE" ]]; then
+            LICENSE_FILES+=("$LIC_FILE")
+        fi
+    done <<< "$LICENSE_LINES"
 
-    if [[ "$LICENSE_COUNT" -eq 0 ]]; then
+    if [[ ${#LICENSE_FILES[@]} -eq 0 ]]; then
         fail "No license_files defined in metadata"
         exit 2
     fi
 
-    for idx in $(seq 0 $((LICENSE_COUNT - 1))); do
-        LIC_FILE=$(jq -r ".metadata.license_files[$idx]" "$MOLD_JSON")
-
-        # Reject path traversal in license file names
-        if [[ "$LIC_FILE" == /* || "$LIC_FILE" == ../* || \
-              "$LIC_FILE" == */../* || "$LIC_FILE" == */.. || \
-              "$LIC_FILE" == .. ]]; then
+    MISSING_LICENSE_FILES=()
+    for LIC_FILE in "${LICENSE_FILES[@]}"; do
+        if is_unsafe_path "$LIC_FILE"; then
             fail "License file path contains traversal or is absolute: ${LIC_FILE}"
             exit 2
         fi
-
         if [[ -f "${STAGING_DIR}/${LIC_FILE}" ]]; then
             pass "License file present: ${LIC_FILE}"
         else
-            # Search in the staging directory tree
-            LIC_BASENAME=$(basename "$LIC_FILE")
-            FOUND_LIC=$(find "$STAGING_DIR" -name "$LIC_BASENAME" -type f 2>/dev/null | head -1)
-            if [[ -n "$FOUND_LIC" ]]; then
-                cp "$FOUND_LIC" "${STAGING_DIR}/${LIC_FILE}"
-                pass "License file found and copied to root: ${LIC_FILE}"
-            else
-                fail "License file not found: ${LIC_FILE}"
+            MISSING_LICENSE_FILES+=("$LIC_FILE")
+        fi
+    done
+
+    if [[ ${#MISSING_LICENSE_FILES[@]} -gt 0 ]]; then
+        if [[ -z "$UPSTREAM" ]]; then
+            fail "License files not at the top of the archive, and no source.upstream: ${MISSING_LICENSE_FILES[*]}"
+            add_summary "- :x: Missing license files: ${MISSING_LICENSE_FILES[*]}"
+            exit 2
+        fi
+        if [[ ! -d "$UPSTREAM_SOURCE" ]]; then
+            fetch_source "$(jq -r '.url' <<< "$UPSTREAM")" \
+                "$(jq -r '.sha256' <<< "$UPSTREAM")" "$UPSTREAM_SOURCE" \
+                "${MISSING_LICENSE_FILES[@]}" || exit $?
+        fi
+        for LIC_FILE in "${MISSING_LICENSE_FILES[@]}"; do
+            if [[ ! -f "${UPSTREAM_SOURCE}/${LIC_FILE}" ]]; then
+                fail "License file not found in the archive or in source.upstream: ${LIC_FILE}"
                 add_summary "- :x: Missing license file: ${LIC_FILE}"
                 exit 2
             fi
-        fi
-    done
+            mkdir -p "$(dirname "${STAGING_DIR}/${LIC_FILE}")"
+            cp "${UPSTREAM_SOURCE}/${LIC_FILE}" "${STAGING_DIR}/${LIC_FILE}"
+            pass "License file copied from the upstream source: ${LIC_FILE}"
+        done
+    fi
+    rm -rf "$UPSTREAM_SOURCE"
 
     # Check for NOTICE files (Apache 2.0 Section 4(d) compliance)
     LICENSE_FILES_LIST=$(jq -r '.metadata.license_files // [] | .[]' "$MOLD_JSON")
@@ -1028,9 +1056,7 @@ elif [[ "$SOURCE_TYPE" == "build" ]]; then
                 fi
 
                 # Reject path traversal
-                if [[ "$PATCH_FILE" == /* || "$PATCH_FILE" == ../* || \
-                      "$PATCH_FILE" == */../* || "$PATCH_FILE" == */.. || \
-                      "$PATCH_FILE" == .. ]]; then
+                if is_unsafe_path "$PATCH_FILE"; then
                     fail "Patch file path contains traversal: ${PATCH_FILE}"
                     exit 2
                 fi
@@ -1475,9 +1501,7 @@ elif [[ "$SOURCE_TYPE" == "build" ]]; then
             LIC_FILE=$(jq -r ".metadata.license_files[$idx]" "$MOLD_JSON")
 
             # Reject path traversal
-            if [[ "$LIC_FILE" == /* || "$LIC_FILE" == ../* || \
-                  "$LIC_FILE" == */../* || "$LIC_FILE" == */.. || \
-                  "$LIC_FILE" == .. ]]; then
+            if is_unsafe_path "$LIC_FILE"; then
                 fail "License file path contains traversal or is absolute: ${LIC_FILE}"
                 exit 2
             fi
@@ -1485,17 +1509,9 @@ elif [[ "$SOURCE_TYPE" == "build" ]]; then
             if [[ -f "${STAGING_DIR}/${LIC_FILE}" ]]; then
                 pass "License file present: ${LIC_FILE}"
             else
-                # Search in the staging directory tree
-                LIC_BASENAME=$(basename "$LIC_FILE")
-                FOUND_LIC=$(find "$STAGING_DIR" -name "$LIC_BASENAME" -type f 2>/dev/null | head -1)
-                if [[ -n "$FOUND_LIC" ]]; then
-                    cp "$FOUND_LIC" "${STAGING_DIR}/${LIC_FILE}"
-                    pass "License file found and copied to root: ${LIC_FILE}"
-                else
-                    fail "License file not found: ${LIC_FILE}"
-                    add_summary "- :x: Missing license file: ${LIC_FILE}"
-                    exit 2
-                fi
+                fail "License file not found: ${LIC_FILE}"
+                add_summary "- :x: Missing license file: ${LIC_FILE}"
+                exit 2
             fi
         done
         echo ""

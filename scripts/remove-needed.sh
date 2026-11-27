@@ -18,6 +18,9 @@
 
 set -euo pipefail
 
+# shellcheck source=scripts/lib/paths.sh
+source "$(dirname "${BASH_SOURCE[0]}")/lib/paths.sh"
+
 INGOT_DIR="${1:?Usage: remove-needed.sh <ingot-directory> <file> <library>}"
 FILE="${2:?Usage: remove-needed.sh <ingot-directory> <file> <library>}"
 LIBRARY="${3:?Usage: remove-needed.sh <ingot-directory> <file> <library>}"
@@ -30,8 +33,7 @@ for cmd in readelf nm patchelf ldconfig; do
     command -v "$cmd" > /dev/null || internal "${cmd} is required"
 done
 
-if [[ "$FILE" == /* || "$FILE" == ../* || "$FILE" == */../* || \
-      "$FILE" == */.. || "$FILE" == .. ]]; then
+if is_unsafe_path "$FILE"; then
     invalid "${FILE} contains traversal or is absolute"
 fi
 TARGET="${INGOT_DIR}/${FILE}"
